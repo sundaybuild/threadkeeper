@@ -158,6 +158,10 @@
         // 学会了「帖子回复区」怎么查，记下来，下次不用再让用户点开帖子
         store.set('tpl:postReplies', d.payload);
         break;
+      case 'stale-postreplies':
+        // 存下来的那份已经失效，清掉，免得下次继续拿它空跑
+        chrome.storage.local.remove('tpl:postReplies');
+        break;
       case 'warn':
         show(title('提醒') + d.payload.message);
         break;

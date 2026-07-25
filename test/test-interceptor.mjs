@@ -116,6 +116,7 @@ function whichKind(body) {
 const SEED_PK = '9999999999999999999';
 const SEED_CODE = 'SEEDCODE01';
 const postReplyCalls = [];
+let postRepliesFail = false;
 const INCOMING_PAGE = conn([
   { node: { thread_items: [{ post: mkPost({ pk: '500', code: 'R1', text: '别人的回复一', at: 1750001000, user: 'fan_a' }) }] } },
   { node: { thread_items: [{ post: mkPost({ pk: '501', code: 'R2', text: '别人的回复二', at: 1750002000, user: 'fan_b' }) }] } },
@@ -131,6 +132,7 @@ globalThis.fetch = async (url, init) => {
   if (failNext) { failNext = false; throw new Error('模拟网络抖动'); }
   if (kind === 'postReplies') {
     postReplyCalls.push(vars);
+    if (postRepliesFail) throw new Error('查询已过期');
     return { ok: true, json: async () => INCOMING_PAGE };
   }
   const json = kind === 'replies'
@@ -259,6 +261,32 @@ ck('模板里的 shortcode 也被替换', call2 && call2.shortcode === 'BBB');
 ck('没有残留模板里的占位 ID',
   !postReplyCalls.some((v) => v.postID === SEED_PK || v.shortcode === SEED_CODE));
 ck('回复区请求数 = 实际抓取的帖子数', postReplyCalls.length === 4);
+
+// === 场景四：回复区查询失效时要熔断，不能空跑几百次 ===
+postIdx = 0; replyIdx = 0;
+postReplyCalls.length = 0;
+postRepliesFail = true;
+
+const r4 = await runExport({
+  includeIncoming: true,
+  knownIds: [],
+  allPosts: [
+    { id: '80', code: 'H1', reply_count: 1 }, { id: '81', code: 'H2', reply_count: 1 },
+    { id: '82', code: 'H3', reply_count: 1 }, { id: '83', code: 'H4', reply_count: 1 },
+  ],
+});
+
+ck('目标远多于失败上限', r4.incomingStats.targets >= 8);
+ck('连续失败后中止', r4.incomingStats.aborted === true);
+ck('恰好失败 3 次就停手', r4.incomingStats.failed === 3);
+ck('熔断后不再发请求', postReplyCalls.length === 3);
+ck('记下了中止原因', r4.incomingStats.abortReason === '查询已过期');
+ck('标记了模板来源', r4.incomingStats.source === 'live');
+ck('中止时给了提醒', r4.events.some((e) => e.type === 'warn'));
+ck('偷听来的模板失效不清缓存', !r4.events.some((e) => e.type === 'stale-postreplies'));
+ck('回复区挂了不影响主贴照常导出', r4.posts.length === 4);
+
+postRepliesFail = false;
 
 // ---------- 汇总 ----------
 let bad = 0;

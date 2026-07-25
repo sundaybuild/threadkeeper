@@ -377,6 +377,23 @@
   const MAX_REPLY_PAGES = 5;
 
   /**
+   * 出厂预置的「单帖回复区」查询种子，让扩展装上就能用，
+   * 不必先手动点开一条串文去学。
+   *
+   * 这里只放 doc_id 和 variables 的形状——请求头和 token 一律借用当前
+   * 页面最新的主页模板，所以不存在把谁的凭证打包进代码的问题；
+   * variables 里的帖子标识是占位值，每次请求都会被换成目标串文的。
+   *
+   * doc_id 会随 Meta 发版变动，所以这只是兜底：优先级是
+   * 「本次偷听到的」>「上次学会存下来的」>「这份种子」。
+   * 种子失效时会自动降级回提示用户点开一条串文，不会硬坏。
+   */
+  const SEED_POST_REPLIES = null;
+
+  /** 连续这么多条帖子都抓失败，就认为查询已经失效，别再空转 */
+  const FAIL_STREAK_LIMIT = 3;
+
+  /**
    * 把模板 variables 里的帖子标识换成目标帖子的。
    * 字段名各版本不一样，所以既按常见名替换，也按值的长相（纯数字长串=pk，
    * 混合短串=shortcode）兜底。
@@ -435,7 +452,11 @@
    */
   async function harvestIncoming(targets, knownCounts) {
     const map = {};
-    const stats = { targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0 };
+    const stats = {
+      targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0,
+      aborted: false, abortReason: null,
+    };
+    let failStreak = 0;
 
     for (let i = 0; i < targets.length; i += 1) {
       const post = targets[i];
@@ -481,8 +502,16 @@
         map[post.id] = got;
         stats.fetched += 1;
         stats.replies += got.length;
+        failStreak = 0;
       } catch (e) {
         stats.failed += 1;
+        failStreak += 1;
+        // 一连几条都失败，多半是查询本身过期了，别再白跑几百次
+        if (failStreak >= FAIL_STREAK_LIMIT) {
+          stats.aborted = true;
+          stats.abortReason = e && e.message ? e.message : String(e);
+          break;
+        }
       }
 
       emit('progress', {
@@ -602,8 +631,15 @@
       // ===== 别人在我串文下的回复 =====
       let incoming = null;
       if (options.includeIncoming) {
+        // 优先用这次偷听到的，其次上次学会存下来的，最后才是出厂种子
+        let source = 'live';
         if (!templates.postReplies && options.postRepliesTemplate) {
-          templates.postReplies = options.postRepliesTemplate; // 上次学会的，从 storage 带回来
+          templates.postReplies = options.postRepliesTemplate;
+          source = 'saved';
+        }
+        if (!templates.postReplies && SEED_POST_REPLIES) {
+          templates.postReplies = SEED_POST_REPLIES;
+          source = 'seed';
         }
         if (!templates.postReplies) {
           emit('warn', {
@@ -618,6 +654,17 @@
 
           emit('status', { text: `准备抓 ${targets.length} 条串文的回复区…` });
           incoming = await harvestIncoming(targets, options.knownReplyCounts || null);
+          incoming.stats.source = source;
+
+          if (incoming.stats.aborted) {
+            // 存下来的或出厂预置的查询已经不管用了，清掉，让下次重新学
+            if (source !== 'live') emit('stale-postreplies', {});
+            emit('warn', {
+              message: source === 'live'
+                ? `回复区连续抓取失败（${incoming.stats.abortReason}），已中止这一项。`
+                : '内置的回复区查询已经过期了。请点开自己的一条串文让它重新学一次，再回来存档。',
+            });
+          }
         }
       }
 
