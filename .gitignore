@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# 导出产物（别把自己的数据提交上去）
+threads-*.json
+*.csv
+*.zip
+
+# 依赖 / 编辑器
+node_modules/
+.vscode/
+.idea/

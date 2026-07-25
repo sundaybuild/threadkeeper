@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "ThreadKeeper 脆存档",
+  "version": "2.0.0",
+  "description": "把你在 Threads 发过的串文连同图片视频一起导出留档：JSON + 可离线浏览的网页。",
+  "permissions": ["storage", "unlimitedStorage", "downloads"],
+  "host_permissions": [
+    "https://www.threads.com/*",
+    "https://www.threads.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ThreadKeeper 脆存档"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.threads.com/*",
+        "https://www.threads.net/*"
+      ],
+      "js": ["interceptor.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://www.threads.com/*",
+        "https://www.threads.net/*"
+      ],
+      "js": ["archive-html.js", "content.js"],
+      "world": "ISOLATED",
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

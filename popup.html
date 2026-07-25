@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      width: 300px; margin: 0; padding: 16px;
+      font: 13px/1.55 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+      background: #fff; color: #111;
+    }
+    h1 { font-size: 15px; margin: 0 0 2px; }
+    .sub { font-size: 11px; color: #999; margin-bottom: 12px; }
+    .account {
+      padding: 8px 10px; border-radius: 8px; background: #f3f3f5;
+      margin-bottom: 6px; word-break: break-all;
+    }
+    .last { font-size: 11px; color: #888; margin-bottom: 12px; min-height: 14px; }
+    .muted { color: #777; }
+    label {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 6px 0; cursor: pointer;
+    }
+    label input { margin: 2px 0 0; flex: none; }
+    label .t { flex: 1; }
+    label .d { display: block; font-size: 11px; color: #999; margin-top: 1px; }
+    button {
+      width: 100%; margin-top: 12px; padding: 10px 12px; border: 0; border-radius: 9px;
+      background: #111; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { background: #c9c9cf; cursor: not-allowed; }
+    .tip { margin-top: 10px; font-size: 11px; color: #999; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1b1b1d; color: #eee; }
+      .account { background: #2a2a2e; }
+      .muted, .tip, .last, label .d, .sub { color: #8a8a8e; }
+      button { background: #f5f5f5; color: #111; }
+      button:disabled { background: #3a3a3e; color: #777; }
+    }
+  </style>
+</head>
+<body>
+  <h1>ThreadKeeper</h1>
+  <div class="sub">脆存档</div>
+
+  <div class="account" id="account"><span class="muted">检测中…</span></div>
+  <div class="last" id="last"></div>
+
+  <label>
+    <input type="checkbox" id="opt-incremental" checked>
+    <span class="t">只抓新内容
+      <span class="d">跟上次存档比对，抓到旧的就停，几秒完事</span></span>
+  </label>
+  <label>
+    <input type="checkbox" id="opt-replies">
+    <span class="t">包含我的回复
+      <span class="d">会自动切一下「回复」标签，耗时翻倍</span></span>
+  </label>
+  <label>
+    <input type="checkbox" id="opt-media" checked>
+    <span class="t">下载图片和视频
+      <span class="d">CDN 链接几周就失效，存下来才算备份</span></span>
+  </label>
+  <label>
+    <input type="checkbox" id="opt-html" checked>
+    <span class="t">生成离线网页
+      <span class="d">index.html，双击就能翻看历史</span></span>
+  </label>
+
+  <button id="go" disabled>开始存档</button>
+  <div class="tip" id="tip">进度显示在页面右下角，关掉这个弹窗也不影响。</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
