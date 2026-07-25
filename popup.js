@@ -16,9 +16,22 @@ const OPTS = {
 const $incomingHint = document.getElementById('incoming-hint');
 let learnedReplyQuery = false;
 
-/** 勾上「别人给我的回复」时，如果还没学会读回复区，当场就告诉他要先做什么 */
+/**
+ * 勾上「别人给我的回复」时给出状态。
+ * 两种状态都要说出来——只在没学会时提示的话，"没有提示"就分不清是
+ * 已经就绪还是功能坏了。
+ */
 function refreshIncomingHint() {
-  $incomingHint.hidden = !(OPTS.incoming.checked && !learnedReplyQuery);
+  if (!OPTS.incoming.checked) { $incomingHint.hidden = true; return; }
+  $incomingHint.hidden = false;
+  if (learnedReplyQuery) {
+    $incomingHint.className = 'hint ok';
+    $incomingHint.textContent = '✓ 已经学会读回复区，直接跑就行';
+  } else {
+    $incomingHint.className = 'hint warn';
+    $incomingHint.innerHTML = '还没学会怎么读回复区。请先打开自己<b>任意一条串文</b>、'
+      + '等回复区显示出来，再回来存档——每个账号只需要这一次。';
+  }
 }
 
 function fmt(iso) {
