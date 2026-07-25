@@ -13,6 +13,14 @@ const OPTS = {
   html: document.getElementById('opt-html'),
 };
 
+const $incomingHint = document.getElementById('incoming-hint');
+let learnedReplyQuery = false;
+
+/** 勾上「别人给我的回复」时，如果还没学会读回复区，当场就告诉他要先做什么 */
+function refreshIncomingHint() {
+  $incomingHint.hidden = !(OPTS.incoming.checked && !learnedReplyQuery);
+}
+
 function fmt(iso) {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -46,7 +54,13 @@ async function detect() {
   $go.disabled = false;
   $go.dataset.tabId = String(tab.id);
   await showLastRun(handle);
+
+  const tpl = await new Promise((r) => chrome.storage.local.get('tpl:postReplies', (o) => r(o['tpl:postReplies'])));
+  learnedReplyQuery = !!(tpl && tpl.doc_id);
+  refreshIncomingHint();
 }
+
+OPTS.incoming.addEventListener('change', refreshIncomingHint);
 
 function fail(msg) {
   $account.innerHTML = `<span class="muted">${msg}</span>`;

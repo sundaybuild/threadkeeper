@@ -377,18 +377,15 @@
   const MAX_REPLY_PAGES = 5;
 
   /**
-   * 出厂预置的「单帖回复区」查询种子，让扩展装上就能用，
-   * 不必先手动点开一条串文去学。
+   * 这里刻意不预置任何 doc_id。
    *
-   * 这里只放 doc_id 和 variables 的形状——请求头和 token 一律借用当前
-   * 页面最新的主页模板，所以不存在把谁的凭证打包进代码的问题；
-   * variables 里的帖子标识是占位值，每次请求都会被换成目标串文的。
+   * 内置一份能让扩展开箱即用，代价是把 Meta 的内部查询 ID 明文写进仓库；
+   * 而且它会随 Meta 发版失效，反倒变成一个需要不断跟着改的东西。
+   * 所以查询格式一律现学：用户点开一条自己的串文时顺手学会，
+   * 存进 storage，一个账号只需要这一次。
    *
-   * doc_id 会随 Meta 发版变动，所以这只是兜底：优先级是
-   * 「本次偷听到的」>「上次学会存下来的」>「这份种子」。
-   * 种子失效时会自动降级回提示用户点开一条串文，不会硬坏。
+   * 优先级：本次偷听到的 > 上次学会存下来的。
    */
-  const SEED_POST_REPLIES = null;
 
   /** 连续这么多条帖子都抓失败，就认为查询已经失效，别再空转 */
   const FAIL_STREAK_LIMIT = 3;
@@ -631,15 +628,11 @@
       // ===== 别人在我串文下的回复 =====
       let incoming = null;
       if (options.includeIncoming) {
-        // 优先用这次偷听到的，其次上次学会存下来的，最后才是出厂种子
+        // 优先用这次偷听到的，其次是上次学会存下来的
         let source = 'live';
         if (!templates.postReplies && options.postRepliesTemplate) {
           templates.postReplies = options.postRepliesTemplate;
           source = 'saved';
-        }
-        if (!templates.postReplies && SEED_POST_REPLIES) {
-          templates.postReplies = SEED_POST_REPLIES;
-          source = 'seed';
         }
         if (!templates.postReplies) {
           emit('warn', {
@@ -657,12 +650,12 @@
           incoming.stats.source = source;
 
           if (incoming.stats.aborted) {
-            // 存下来的或出厂预置的查询已经不管用了，清掉，让下次重新学
-            if (source !== 'live') emit('stale-postreplies', {});
+            // 上次存下来的那份已经不管用了，清掉，让下次重新学
+            if (source === 'saved') emit('stale-postreplies', {});
             emit('warn', {
-              message: source === 'live'
-                ? `回复区连续抓取失败（${incoming.stats.abortReason}），已中止这一项。`
-                : '内置的回复区查询已经过期了。请点开自己的一条串文让它重新学一次，再回来存档。',
+              message: source === 'saved'
+                ? '上次记住的回复区查询已经失效（Meta 改版了），已经清掉。请点开自己的一条串文让它重新学一次，再回来存档。'
+                : `回复区连续抓取失败（${incoming.stats.abortReason}），已中止这一项。`,
             });
           }
         }
