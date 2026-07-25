@@ -112,6 +112,11 @@ const ck = (name, ok) => checks.push([name, ok]);
         like_count: 10, reply_count: 2, repost_count: 1,
         media: [{ type: 'image', url: 'https://cdn/a.jpg', local: 'media/AAA-1.jpg', alt: '图' }],
         url: 'https://www.threads.com/@example_user/post/AAA',
+        incoming_replies: [
+          { id: '900', username: 'fan_a', text: '第一个回复我的人', posted_at: '2026-07-20T11:00:00.000Z', posted_at_unix: 1753009200, media: [] },
+          { id: '901', username: 'fan_b', text: '独有关键词蜂蜜柚子', posted_at: '2026-07-20T12:00:00.000Z', posted_at_unix: 1753012800, media: [] },
+        ],
+        incoming_replies_at: '2026-07-26T02:00:00.000Z',
       },
       {
         id: '2', code: 'BBB', kind: 'post', posted_at: '2026-07-19T10:00:00.000Z',
@@ -156,6 +161,29 @@ const ck = (name, ok) => checks.push([name, ok]);
   ck('回复上下文带过去了',
     parsed && parsed.items.find((p) => p.id === '3').in_reply_to.username === 'someone_else');
   ck('普通空格没被破坏', parsed && parsed.items[0].text.includes('正常一条 https://example.com 带链接'));
+
+  // 别人给我的回复
+  const withReplies = parsed && parsed.items.find((p) => p.id === '1');
+  ck('收到的回复进了存档页', withReplies && withReplies.incoming_replies.length === 2);
+  ck('回复者用户名保留', withReplies && withReplies.incoming_replies[0].username === 'fan_a');
+  ck('回复按对话顺序',
+    withReplies && withReplies.incoming_replies[0].posted_at_unix
+      < withReplies.incoming_replies[1].posted_at_unix);
+  ck('页面有折叠回复的结构', html.includes('details class="replies"'));
+  ck('搜索逻辑覆盖了收到的回复', html.includes('incoming_replies||[]'));
+}
+
+// ---------- mergeById 不能弄丢已抓的回复 ----------
+{
+  const oldList = [{ id: '1', posted_at_unix: 100, incoming_replies: [{ id: 'r1', text: '旧回复' }], incoming_replies_at: '2026-07-01T00:00:00.000Z' }];
+  const newList = [{ id: '1', posted_at_unix: 100, like_count: 99 }]; // 这轮没重抓回复区
+  const merged = mergeById(oldList, newList);
+  ck('没重抓回复区时保留上次的回复', merged[0].incoming_replies?.length === 1);
+  ck('同时仍采用新的互动数据', merged[0].like_count === 99);
+  ck('保留上次抓取时间', merged[0].incoming_replies_at === '2026-07-01T00:00:00.000Z');
+
+  const fresh = mergeById(oldList, [{ id: '1', posted_at_unix: 100, incoming_replies: [{ id: 'r1' }, { id: 'r2' }] }]);
+  ck('这轮抓到新回复时以新的为准', fresh[0].incoming_replies.length === 2);
 }
 
 // ---------- 汇总 ----------

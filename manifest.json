@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ThreadKeeper 脆存档",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "把你在 Threads 发过的串文连同图片视频一起导出留档：JSON + 可离线浏览的网页。",
   "permissions": ["storage", "unlimitedStorage", "downloads"],
   "host_permissions": [

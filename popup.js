@@ -8,6 +8,7 @@ const $go = document.getElementById('go');
 const OPTS = {
   incremental: document.getElementById('opt-incremental'),
   replies: document.getElementById('opt-replies'),
+  incoming: document.getElementById('opt-incoming'),
   media: document.getElementById('opt-media'),
   html: document.getElementById('opt-html'),
 };
@@ -64,6 +65,7 @@ $go.addEventListener('click', async () => {
       payload: {
         incremental: OPTS.incremental.checked,
         includeReplies: OPTS.replies.checked,
+        includeIncoming: OPTS.incoming.checked,
         includeMedia: OPTS.media.checked,
         includeHtml: OPTS.html.checked,
       },

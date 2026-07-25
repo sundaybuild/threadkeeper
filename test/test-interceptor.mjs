@@ -108,16 +108,31 @@ let failNext = false;
 
 function whichKind(body) {
   const name = new URLSearchParams(body).get('fb_api_req_friendly_name') || '';
+  if (/PostPage|DirectReplies/i.test(name)) return 'postReplies';
   return /RepliesTab/i.test(name) ? 'replies' : 'posts';
 }
+
+// 单帖回复区：记下每次请求的 variables，好断言 postID 有没有被正确替换
+const SEED_PK = '9999999999999999999';
+const SEED_CODE = 'SEEDCODE01';
+const postReplyCalls = [];
+const INCOMING_PAGE = conn([
+  { node: { thread_items: [{ post: mkPost({ pk: '500', code: 'R1', text: '别人的回复一', at: 1750001000, user: 'fan_a' }) }] } },
+  { node: { thread_items: [{ post: mkPost({ pk: '501', code: 'R2', text: '别人的回复二', at: 1750002000, user: 'fan_b' }) }] } },
+], false, null);
 
 globalThis.fetch = async (url, init) => {
   const kind = whichKind(init.body);
   calls[kind] += 1;
   // 页面自己发的那次（after 还是模板里的原始值），不消耗测试数据页
   const vars = JSON.parse(new URLSearchParams(init.body).get('variables'));
-  if (vars.after === 'X') return { ok: true, json: async () => ({}) };
+  // 种子请求的标志：占位 ID 还没被 substituteIds 换掉
+  if (vars.after === 'X' || vars.postID === SEED_PK) return { ok: true, json: async () => ({}) };
   if (failNext) { failNext = false; throw new Error('模拟网络抖动'); }
+  if (kind === 'postReplies') {
+    postReplyCalls.push(vars);
+    return { ok: true, json: async () => INCOMING_PAGE };
+  }
   const json = kind === 'replies'
     ? (REPLY_PAGES[replyIdx++] ?? REPLY_PAGES.at(-1))
     : (POST_PAGES[postIdx++] ?? POST_PAGES.at(-1));
@@ -130,12 +145,20 @@ eval(fs.readFileSync(SRC, 'utf8'));
 
 /** 模拟页面自己发一次 GraphQL 请求，好让拦截器捕到模板 */
 function firePageRequest(kind) {
+  const NAMES = {
+    posts: 'BarcelonaProfileThreadsTabRefetchableQuery',
+    replies: 'BarcelonaProfileRepliesTabRefetchableQuery',
+    postReplies: 'BarcelonaPostPageRefetchableDirectRepliesQuery',
+  };
+  const DOCS = { posts: '111', replies: '222', postReplies: '333' };
+  // 单帖查询的 variables 里没有 userID，帖子标识可能是长数字 pk 也可能是 shortcode
+  const vars = kind === 'postReplies'
+    ? { postID: SEED_PK, shortcode: SEED_CODE, first: 10, after: null }
+    : { after: 'X', before: null, first: 10, last: null, userID: '111' };
   const body = new URLSearchParams({
-    fb_dtsg: 'DTSG', lsd: 'LSD', doc_id: kind === 'replies' ? '222' : '111',
-    fb_api_req_friendly_name: kind === 'replies'
-      ? 'BarcelonaProfileRepliesTabRefetchableQuery'
-      : 'BarcelonaProfileThreadsTabRefetchableQuery',
-    variables: JSON.stringify({ after: 'X', before: null, first: 10, last: null, userID: '111' }),
+    fb_dtsg: 'DTSG', lsd: 'LSD', doc_id: DOCS[kind],
+    fb_api_req_friendly_name: NAMES[kind],
+    variables: JSON.stringify(vars),
   }).toString();
   window.fetch('https://www.threads.com/graphql/query', {
     method: 'POST',
@@ -201,6 +224,41 @@ const r2 = await runExport({ includeReplies: false, knownIds: known });
 
 ck('增量下没有新条目', r2.posts.length === 0);
 ck('增量提前停止(没翻完 3 页)', calls.posts - before === 2);
+
+// === 场景三：抓别人在我串文下的回复 ===
+postIdx = 0; replyIdx = 0;
+firePageRequest('postReplies');   // 模拟用户点开自己一条串文，加载了回复区
+await new Promise((r) => setTimeout(r, 50));
+
+const r3 = await runExport({
+  includeReplies: false,
+  includeIncoming: true,
+  knownIds: [],
+  // 帖子 1 上次抓时就是 2 条回复，没变过，应该跳过
+  knownReplyCounts: { 1: 2 },
+  // 历史里还有一条这次时间线上没出现的老帖，也该一并刷新
+  allPosts: [{ id: '99', code: 'OLD', reply_count: 5 }],
+});
+
+ck('学会了单帖回复查询', r3.incomingStats != null);
+ck('历史老帖也纳入抓取范围', r3.incomingStats.targets === 5);
+ck('回复数没变的帖子被跳过', r3.incomingStats.skipped === 1);
+ck('其余帖子都抓了', r3.incomingStats.fetched === 4 && r3.incomingStats.failed === 0);
+ck('跳过的帖子没有发请求', !postReplyCalls.some((v) => v.postID === '1'));
+ck('抓到的回复挂在对应帖子下', (r3.incoming['2'] || []).length === 2);
+ck('老帖的回复也抓到了', !!r3.incoming['99']);
+ck('回复内容正确', r3.incoming['2'][0].text === '别人的回复一');
+ck('回复者是别人', r3.incoming['2'][0].username === 'fan_a');
+ck('回复按时间正序(对话顺序)',
+  r3.incoming['2'][0].posted_at_unix < r3.incoming['2'][1].posted_at_unix);
+
+// 模板里的占位 pk / shortcode 必须被换成目标帖子的
+const call2 = postReplyCalls.find((v) => v.postID === '2');
+ck('模板里的 postID 被替换', !!call2);
+ck('模板里的 shortcode 也被替换', call2 && call2.shortcode === 'BBB');
+ck('没有残留模板里的占位 ID',
+  !postReplyCalls.some((v) => v.postID === SEED_PK || v.shortcode === SEED_CODE));
+ck('回复区请求数 = 实际抓取的帖子数', postReplyCalls.length === 4);
 
 // ---------- 汇总 ----------
 let bad = 0;

@@ -74,6 +74,15 @@ function buildArchiveHtml(data) {
     border-radius:10px;font-size:12px}
   .cont{margin-top:10px;padding-left:14px;border-left:2px solid var(--line)}
   .cont .text{font-size:14px}
+  details.replies{margin-top:12px}
+  details.replies summary{cursor:pointer;color:var(--muted);font-size:13px;
+    padding:6px 0;user-select:none}
+  details.replies summary:hover{color:var(--fg)}
+  .rep{padding:10px 0 10px 12px;border-left:2px solid var(--line);margin-top:8px}
+  .rep .rhead{font-size:13px;margin-bottom:2px}
+  .rep .rhead b{font-weight:600}
+  .rep .rhead time{margin-left:6px;font-size:12px}
+  .rep .text{font-size:14px}
   .stats{display:flex;gap:14px;margin-top:10px;color:var(--muted);font-size:13px;flex-wrap:wrap}
   .stats a{color:var(--muted);text-decoration:none;margin-left:auto}
   .stats a:hover{color:var(--accent)}
@@ -172,6 +181,16 @@ function buildArchiveHtml(data) {
       }).join('')+'</div>';
     }
     h += statsHtml(p);
+
+    if(p.incoming_replies && p.incoming_replies.length){
+      h += '<details class="replies"><summary>展开 '+p.incoming_replies.length+' 条回复</summary>'+
+        p.incoming_replies.map(function(r){
+          return '<div class="rep"><div class="rhead"><b>@'+esc(r.username||'')+'</b>'+
+            '<time>'+fmtDate(r.posted_at)+'</time></div>'+
+            '<div class="text">'+linkify(r.text||'')+'</div>'+mediaHtml(r.media)+'</div>';
+        }).join('')+'</details>';
+    }
+
     el.innerHTML = h;
     return el;
   }
@@ -184,7 +203,13 @@ function buildArchiveHtml(data) {
     filtered = DATA.items.filter(function(p){
       if(mode === 'post' && p.kind === 'reply') return false;
       if(mode === 'reply' && p.kind !== 'reply') return false;
-      if(kw && (p.text||'').toLowerCase().indexOf(kw) === -1) return false;
+      if(kw){
+        if((p.text||'').toLowerCase().indexOf(kw) !== -1) return true;
+        // 收到的回复里也搜一遍
+        return (p.incoming_replies||[]).some(function(r){
+          return (r.text||'').toLowerCase().indexOf(kw) !== -1;
+        });
+      }
       return true;
     });
     list.innerHTML = ''; shown = 0;

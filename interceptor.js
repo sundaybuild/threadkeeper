@@ -22,10 +22,12 @@
   const KIND_RE = {
     posts: /ProfileThreadsTab/i,   // BarcelonaProfileThreadsTabQuery
     replies: /ProfileRepliesTab/i, // BarcelonaProfileRepliesTabQuery
+    // 单帖的回复区：BarcelonaPostPageQuery / …DirectRepliesQuery
+    postReplies: /PostPage|DirectReplies/i,
   };
 
-  /** @type {{posts: object|null, replies: object|null}} */
-  const templates = { posts: null, replies: null };
+  /** @type {{posts: object|null, replies: object|null, postReplies: object|null}} */
+  const templates = { posts: null, replies: null, postReplies: null };
 
   function normalizeHeaders(h) {
     const out = {};
@@ -60,8 +62,19 @@
       const varsRaw = params.get('variables');
       if (!varsRaw) return;
       const vars = JSON.parse(varsRaw);
-      // 必须是"某个用户的主页时间线"，而不是单帖/推荐流
-      if (!vars || (vars.userID == null && vars.user_id == null && vars.userId == null)) return;
+      if (!vars) return;
+
+      if (kind === 'postReplies') {
+        // 单帖回复区：只留 doc_id 和 variables 形状。请求头和 token 到时候
+        // 借主页模板的最新那份用，免得这里存下来的 token 放久了失效。
+        templates.postReplies = { doc_id: params.get('doc_id'), name, variables: vars, at: Date.now() };
+        emit('captured-postreplies', { doc_id: params.get('doc_id'), name, variables: vars });
+        console.log(TAG, '已捕获单帖回复模板:', name);
+        return;
+      }
+
+      // 主页时间线必须带 userID，借此排除单帖/推荐流
+      if (vars.userID == null && vars.user_id == null && vars.userId == null) return;
 
       templates[kind] = {
         url: String(url),
@@ -360,6 +373,126 @@
     return out;
   }
 
+  // ---------- 单帖回复区 ----------
+  const MAX_REPLY_PAGES = 5;
+
+  /**
+   * 把模板 variables 里的帖子标识换成目标帖子的。
+   * 字段名各版本不一样，所以既按常见名替换，也按值的长相（纯数字长串=pk，
+   * 混合短串=shortcode）兜底。
+   */
+  function substituteIds(vars, post) {
+    const clone = JSON.parse(JSON.stringify(vars));
+    const isPk = (v) => typeof v === 'string' && /^\d{15,}$/.test(v);
+    const isCode = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{8,20}$/.test(v) && !/^\d+$/.test(v);
+
+    for (const k of Object.keys(clone)) {
+      if (isPk(clone[k])) clone[k] = String(post.id);
+      else if (isCode(clone[k]) && post.code) clone[k] = post.code;
+    }
+    ['postID', 'post_id', 'postId', 'mediaID', 'media_id'].forEach((k) => {
+      if (k in clone) clone[k] = String(post.id);
+    });
+    ['code', 'shortcode', 'postCode'].forEach((k) => {
+      if (k in clone && post.code) clone[k] = post.code;
+    });
+    return clone;
+  }
+
+  async function fetchPostReplies(post, cursor) {
+    const base = templates.posts; // 借主页模板的 url / 请求头 / token
+    const params = new URLSearchParams(base.body);
+    params.set('doc_id', templates.postReplies.doc_id);
+    params.set('fb_api_req_friendly_name', templates.postReplies.name);
+
+    const vars = substituteIds(templates.postReplies.variables, post);
+    vars.first = vars.first || 25;
+    if ('cursor' in vars && !('after' in vars)) vars.cursor = cursor;
+    else vars.after = cursor;
+    params.set('variables', JSON.stringify(vars));
+
+    const headers = Object.assign({}, base.headers);
+    headers['content-type'] = 'application/x-www-form-urlencoded';
+    delete headers['content-length'];
+
+    const res = await origFetch.call(window, base.url, {
+      method: 'POST', headers, body: params.toString(),
+      credentials: 'include', mode: 'cors',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (json && json.errors && json.errors.length) {
+      throw new Error(json.errors[0].message || 'GraphQL 返回错误');
+    }
+    return json;
+  }
+
+  /**
+   * 逐条抓帖子的回复区。
+   * @param {Array<{id:string, code:string, reply_count:number}>} targets
+   * @param {Object<string,number>|null} knownCounts 上次抓时各帖的回复数
+   * @returns {{map:Object, stats:Object}}
+   */
+  async function harvestIncoming(targets, knownCounts) {
+    const map = {};
+    const stats = { targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0 };
+
+    for (let i = 0; i < targets.length; i += 1) {
+      const post = targets[i];
+
+      // 回复数跟上次一样，说明没人新回复，不用再拉一遍
+      if (knownCounts && knownCounts[post.id] === post.reply_count) {
+        stats.skipped += 1;
+        continue;
+      }
+
+      const got = [];
+      const seen = new Set();
+      let cursor = null;
+
+      try {
+        for (let page = 0; page < MAX_REPLY_PAGES; page += 1) {
+          const json = await fetchPostReplies(post, cursor);
+          const conn = pickMainConnection(json);
+          if (!conn) break;
+
+          let added = 0;
+          for (const edge of conn.edges) {
+            const node = (edge && edge.node) || edge;
+            if (!node) continue;
+            const items = Array.isArray(node.thread_items) ? node.thread_items : [];
+            const rp = items.length ? items[0].post : node.post;
+            if (!rp) continue;
+            const rec = normalizePost(rp);
+            if (!rec || !rec.id || rec.id === post.id || seen.has(rec.id)) continue;
+            seen.add(rec.id);
+            delete rec.continuation;
+            got.push(rec);
+            added += 1;
+          }
+
+          const { hasNext, cursor: next } = readPageInfo(conn.pageInfo);
+          if (!hasNext || !next || next === cursor || added === 0) break;
+          cursor = next;
+          await sleep(650);
+        }
+
+        got.sort((a, b) => (a.posted_at_unix || 0) - (b.posted_at_unix || 0));
+        map[post.id] = got;
+        stats.fetched += 1;
+        stats.replies += got.length;
+      } catch (e) {
+        stats.failed += 1;
+      }
+
+      emit('progress', {
+        label: '帖子回复', page: i + 1, total: targets.length, count: stats.replies,
+      });
+      await sleep(650);
+    }
+    return { map, stats };
+  }
+
   async function run(opts) {
     if (running) return;
     running = true;
@@ -466,10 +599,36 @@
         }
       }
 
+      // ===== 别人在我串文下的回复 =====
+      let incoming = null;
+      if (options.includeIncoming) {
+        if (!templates.postReplies && options.postRepliesTemplate) {
+          templates.postReplies = options.postRepliesTemplate; // 上次学会的，从 storage 带回来
+        }
+        if (!templates.postReplies) {
+          emit('warn', {
+            message: '还没学会「帖子回复区」的查询格式，这次先跳过。请随便点开自己的一条串文（让回复区加载一次），再回主页重新存档。',
+          });
+        } else {
+          // 历史帖子也要一起刷，因为老帖同样会有新回复
+          const byId = new Map();
+          posts.forEach((p) => byId.set(p.id, { id: p.id, code: p.code, reply_count: p.reply_count }));
+          (options.allPosts || []).forEach((p) => { if (!byId.has(p.id)) byId.set(p.id, p); });
+          const targets = Array.from(byId.values()).filter((p) => (p.reply_count || 0) > 0);
+
+          emit('status', { text: `准备抓 ${targets.length} 条串文的回复区…` });
+          incoming = await harvestIncoming(targets, options.knownReplyCounts || null);
+        }
+      }
+
       posts.sort((a, b) => (b.posted_at_unix || 0) - (a.posted_at_unix || 0));
       replies.sort((a, b) => (b.posted_at_unix || 0) - (a.posted_at_unix || 0));
 
-      emit('result', { handle, posts, replies, stats });
+      emit('result', {
+        handle, posts, replies, stats,
+        incoming: incoming ? incoming.map : null,
+        incomingStats: incoming ? incoming.stats : null,
+      });
     } catch (err) {
       console.error(TAG, err);
       emit('error', { message: err && err.message ? err.message : String(err) });

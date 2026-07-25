@@ -85,7 +85,18 @@
   function mergeById(oldList, newList) {
     const map = new Map();
     (oldList || []).forEach((p) => map.set(p.id, p));
-    (newList || []).forEach((p) => map.set(p.id, p));
+    (newList || []).forEach((p) => {
+      const prev = map.get(p.id);
+      // 这一轮没重抓回复区的帖子，把上次存下来的回复带过来，别弄丢
+      if (prev && prev.incoming_replies && !p.incoming_replies) {
+        map.set(p.id, Object.assign({}, p, {
+          incoming_replies: prev.incoming_replies,
+          incoming_replies_at: prev.incoming_replies_at,
+        }));
+      } else {
+        map.set(p.id, p);
+      }
+    });
     return Array.from(map.values())
       .sort((a, b) => (b.posted_at_unix || 0) - (a.posted_at_unix || 0));
   }
@@ -137,9 +148,15 @@
       case 'status':
         show(title('脆存档') + d.payload.text);
         break;
-      case 'progress':
-        show(title(`正在抓取${d.payload.label}…`) +
-          `已拿到 <b>${d.payload.count}</b> 条（第 ${d.payload.page} 页）`);
+      case 'progress': {
+        const p = d.payload;
+        const where = p.total ? `（第 ${p.page} / ${p.total} 条）` : `（第 ${p.page} 页）`;
+        show(title(`正在抓取${p.label}…`) + `已拿到 <b>${p.count}</b> 条${where}`);
+        break;
+      }
+      case 'captured-postreplies':
+        // 学会了「帖子回复区」怎么查，记下来，下次不用再让用户点开帖子
+        store.set('tpl:postReplies', d.payload);
         break;
       case 'warn':
         show(title('提醒') + d.payload.message);
@@ -166,6 +183,19 @@
       const posts = mergeById(prev.posts, res.posts);
       const replies = mergeById(prev.replies, res.replies);
       const mediaDone = prev.media_done || {};
+      const replyCounts = prev.reply_counts || {};
+
+      // 把这轮抓到的「别人的回复」贴回对应的帖子上
+      if (res.incoming) {
+        const byId = new Map(posts.map((p) => [p.id, p]));
+        Object.keys(res.incoming).forEach((pid) => {
+          const target = byId.get(pid);
+          if (!target) return;
+          target.incoming_replies = res.incoming[pid];
+          target.incoming_replies_at = new Date().toISOString();
+          replyCounts[pid] = target.reply_count; // 快照，下次靠它判断要不要重抓
+        });
+      }
 
       const all = posts.concat(replies);
       const todo = pending.includeMedia ? planMedia(all, mediaDone) : [];
@@ -174,13 +204,16 @@
         account: `@${res.handle}`,
         profile_url: `https://www.threads.com/@${res.handle}`,
         exported_at: new Date().toISOString(),
-        exported_by: 'ThreadKeeper 脆存档 v2.0.0',
-        scope: pending.includeReplies
-          ? '原创主贴 + 自己的回复（已排除转发）'
-          : '原创主贴（已排除转发；不含在他人串下的回复）',
+        exported_by: 'ThreadKeeper 脆存档 v2.1.0',
+        scope: [
+          '原创主贴（已排除转发）',
+          pending.includeReplies ? '自己的回复' : null,
+          pending.includeIncoming ? '别人在我串文下的回复' : null,
+        ].filter(Boolean).join(' + '),
         counts: {
           posts: posts.length,
           replies: replies.length,
+          incoming_replies: posts.reduce((n, p) => n + ((p.incoming_replies || []).length), 0),
           new_this_run: (res.posts || []).length + (res.replies || []).length,
         },
         skipped_reposts: res.stats.skipped_reposts,
@@ -199,7 +232,8 @@
       // 先把这次的媒体登记进已下载表（失败的下次会重来一遍，代价只是重下）
       todo.forEach((m) => { mediaDone[m.url] = m.name; });
       await store.set(key, {
-        posts, replies, media_done: mediaDone, updated_at: new Date().toISOString(),
+        posts, replies, media_done: mediaDone, reply_counts: replyCounts,
+        updated_at: new Date().toISOString(),
       });
 
       show(title('正在写入文件…') +
@@ -214,6 +248,8 @@
       pending.summary = {
         posts: posts.length,
         replies: replies.length,
+        incoming: payload.counts.incoming_replies,
+        incomingStats: res.incomingStats,
         fresh: payload.counts.new_this_run,
         media: todo.length,
       };
@@ -244,7 +280,11 @@
       busy = false;
       const s = (pending && pending.summary) || {};
       let text = `共 ${s.posts || 0} 条串文`;
-      if (s.replies) text += ` · ${s.replies} 条回复`;
+      if (s.replies) text += ` · ${s.replies} 条我的回复`;
+      if (s.incoming) text += `\n收到的回复 ${s.incoming} 条`;
+      if (s.incomingStats && s.incomingStats.failed) {
+        text += `（${s.incomingStats.failed} 条帖子抓取失败）`;
+      }
       text += `\n本次新增 ${s.fresh || 0} 条`;
       if (msg.payload.mediaOk) text += `\n媒体 ${msg.payload.mediaOk} 个`;
       if (msg.payload.mediaFail) text += `（${msg.payload.mediaFail} 个失败）`;
@@ -267,22 +307,37 @@
   async function begin(opts) {
     busy = true;
     pending = Object.assign({
-      includeReplies: false, includeMedia: true, includeHtml: true, incremental: true,
+      includeReplies: false, includeIncoming: false,
+      includeMedia: true, includeHtml: true, incremental: true,
     }, opts);
 
     const handle = handleOf();
     show(title('脆存档') + '准备中…');
 
+    const prev = handle ? await store.get(`archive:${handle}`) : null;
+
     let knownIds = [];
-    if (pending.incremental && handle) {
-      const prev = await store.get(`archive:${handle}`);
-      if (prev) {
-        knownIds = [].concat(
-          (prev.posts || []).map((p) => p.id),
-          (prev.replies || []).map((p) => p.id),
-        );
-      }
+    if (pending.incremental && prev) {
+      knownIds = [].concat(
+        (prev.posts || []).map((p) => p.id),
+        (prev.replies || []).map((p) => p.id),
+      );
     }
-    toPage('start', { includeReplies: pending.includeReplies, knownIds });
+
+    const extra = {};
+    if (pending.includeIncoming) {
+      // 老帖也可能收到新回复，所以把历史帖子一起交上去
+      extra.allPosts = (prev && prev.posts ? prev.posts : [])
+        .map((p) => ({ id: p.id, code: p.code, reply_count: p.reply_count }));
+      extra.knownReplyCounts = (prev && prev.reply_counts) || {};
+      extra.postRepliesTemplate = await store.get('tpl:postReplies');
+    }
+
+    toPage('start', {
+      includeReplies: pending.includeReplies,
+      includeIncoming: pending.includeIncoming,
+      knownIds,
+      ...extra,
+    });
   }
 })();
