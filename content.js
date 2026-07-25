@@ -6,6 +6,14 @@
   'use strict';
 
   const CHANNEL = 'THREADKEEPER';
+
+  /**
+   * 「收到的回复」这部分数据的版本。抓法改进（比如开始收嵌套回复）后要 +1：
+   * 版本对不上时忽略回复数快照，强制把回复区整个重抓一遍，
+   * 否则旧存档里那些不完整的记录会因为"回复数没变"被永远跳过。
+   */
+  const INCOMING_SCHEMA = 2;
+
   let panel = null;
   let hideTimer = null;
   let busy = false;
@@ -237,6 +245,8 @@
       todo.forEach((m) => { mediaDone[m.url] = m.name; });
       await store.set(key, {
         posts, replies, media_done: mediaDone, reply_counts: replyCounts,
+        // 只有这轮真抓过回复区，才算按新版本存过
+        incoming_schema: res.incoming ? INCOMING_SCHEMA : (prev.incoming_schema || 0),
         updated_at: new Date().toISOString(),
       });
 
@@ -333,7 +343,9 @@
       // 老帖也可能收到新回复，所以把历史帖子一起交上去
       extra.allPosts = (prev && prev.posts ? prev.posts : [])
         .map((p) => ({ id: p.id, code: p.code, reply_count: p.reply_count }));
-      extra.knownReplyCounts = (prev && prev.reply_counts) || {};
+      // 抓法升级过就别信旧快照，让它整个重抓一遍
+      const schemaOk = prev && prev.incoming_schema === INCOMING_SCHEMA;
+      extra.knownReplyCounts = (schemaOk && prev.reply_counts) || {};
       extra.postRepliesTemplate = await store.get('tpl:postReplies');
     }
 

@@ -478,15 +478,22 @@
           for (const edge of conn.edges) {
             const node = (edge && edge.node) || edge;
             if (!node) continue;
-            const items = Array.isArray(node.thread_items) ? node.thread_items : [];
-            const rp = items.length ? items[0].post : node.post;
-            if (!rp) continue;
-            const rec = normalizePost(rp);
-            if (!rec || !rec.id || rec.id === post.id || seen.has(rec.id)) continue;
-            seen.add(rec.id);
-            delete rec.continuation;
-            got.push(rec);
-            added += 1;
+            // 一个 edge 是一整条对话分支：thread_items 里除了顶层回复，
+            // 还挂着它下面的子回复，全都要收。
+            const items = Array.isArray(node.thread_items) && node.thread_items.length
+              ? node.thread_items
+              : (node.post ? [{ post: node.post }] : []);
+
+            for (const it of items) {
+              const rp = it && it.post;
+              if (!rp) continue;
+              const rec = normalizePost(rp);
+              if (!rec || !rec.id || rec.id === post.id || seen.has(rec.id)) continue;
+              seen.add(rec.id);
+              delete rec.continuation;
+              got.push(rec);
+              added += 1;
+            }
           }
 
           const { hasNext, cursor: next } = readPageInfo(conn.pageInfo);

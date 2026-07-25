@@ -117,9 +117,15 @@ const SEED_PK = '9999999999999999999';
 const SEED_CODE = 'SEEDCODE01';
 const postReplyCalls = [];
 let postRepliesFail = false;
+// 回复区的一个 edge 是一整条对话分支：顶层回复下面还挂着子回复
 const INCOMING_PAGE = conn([
-  { node: { thread_items: [{ post: mkPost({ pk: '500', code: 'R1', text: '别人的回复一', at: 1750001000, user: 'fan_a' }) }] } },
+  { node: { thread_items: [
+    { post: mkPost({ pk: '500', code: 'R1', text: '别人的回复一', at: 1750001000, user: 'fan_a' }) },
+    { post: mkPost({ pk: '502', code: 'R3', text: '回复的回复', at: 1750001500, user: 'fan_c' }) },
+    { post: mkPost({ pk: '503', code: 'R4', text: '我在回复区的答复', at: 1750001800 }) },
+  ] } },
   { node: { thread_items: [{ post: mkPost({ pk: '501', code: 'R2', text: '别人的回复二', at: 1750002000, user: 'fan_b' }) }] } },
+  { node: { post: mkPost({ pk: '504', code: 'R5', text: '没有 thread_items 包装的', at: 1750002500, user: 'fan_d' }) } },
 ], false, null);
 
 globalThis.fetch = async (url, init) => {
@@ -247,12 +253,18 @@ ck('历史老帖也纳入抓取范围', r3.incomingStats.targets === 5);
 ck('回复数没变的帖子被跳过', r3.incomingStats.skipped === 1);
 ck('其余帖子都抓了', r3.incomingStats.fetched === 4 && r3.incomingStats.failed === 0);
 ck('跳过的帖子没有发请求', !postReplyCalls.some((v) => v.postID === '1'));
-ck('抓到的回复挂在对应帖子下', (r3.incoming['2'] || []).length === 2);
+ck('抓到的回复挂在对应帖子下', (r3.incoming['2'] || []).length === 5);
 ck('老帖的回复也抓到了', !!r3.incoming['99']);
 ck('回复内容正确', r3.incoming['2'][0].text === '别人的回复一');
 ck('回复者是别人', r3.incoming['2'][0].username === 'fan_a');
 ck('回复按时间正序(对话顺序)',
   r3.incoming['2'][0].posted_at_unix < r3.incoming['2'][1].posted_at_unix);
+
+// 一个 edge 里的整条对话分支都要收，只取第一条会丢掉一大半
+const texts2 = r3.incoming['2'].map((x) => x.text);
+ck('嵌套的子回复没被丢掉', texts2.includes('回复的回复'));
+ck('我在自己回复区的答复也收了', texts2.includes('我在回复区的答复'));
+ck('没有 thread_items 包装的也能收', texts2.includes('没有 thread_items 包装的'));
 
 // 模板里的占位 pk / shortcode 必须被换成目标帖子的
 const call2 = postReplyCalls.find((v) => v.postID === '2');
