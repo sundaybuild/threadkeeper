@@ -117,6 +117,7 @@ const SEED_PK = '9999999999999999999';
 const SEED_CODE = 'SEEDCODE01';
 const postReplyCalls = [];
 let postRepliesFail = false;
+let postRepliesEmpty = false;
 // 回复区的一个 edge 是一整条对话分支：顶层回复下面还挂着子回复
 const INCOMING_PAGE = conn([
   { node: { thread_items: [
@@ -139,6 +140,8 @@ globalThis.fetch = async (url, init) => {
   if (kind === 'postReplies') {
     postReplyCalls.push(vars);
     if (postRepliesFail) throw new Error('查询已过期');
+    // 被限流时的典型表现：HTTP 200、没有 errors，但回复列表是空的
+    if (postRepliesEmpty) return { ok: true, json: async () => conn([], false, null) };
     return { ok: true, json: async () => INCOMING_PAGE };
   }
   const json = kind === 'replies'
@@ -299,6 +302,28 @@ ck('偷听来的模板失效不清缓存', !r4.events.some((e) => e.type === 'st
 ck('回复区挂了不影响主贴照常导出', r4.posts.length === 4);
 
 postRepliesFail = false;
+
+// === 场景五：被限流时返回空列表，绝不能覆盖上次抓到的数据 ===
+postIdx = 0; replyIdx = 0;
+postReplyCalls.length = 0;
+postRepliesEmpty = true;
+
+const r5 = await runExport({
+  includeIncoming: true,
+  knownIds: [],
+  // 只留一条帖子当目标，其余用回复数快照跳过，省得测试空等退避
+  knownReplyCounts: { 1: 2, 4: 2, 6: 2 },
+});
+
+ck('空列表计入 empty', r5.incomingStats.empty === 1);
+ck('空列表不算抓取成功', r5.incomingStats.fetched === 0);
+ck('空列表不算失败，也不熔断',
+  r5.incomingStats.failed === 0 && r5.incomingStats.aborted === false);
+ck('空结果不写进结果集(不会覆盖上次抓到的回复)',
+  Object.keys(r5.incoming).length === 0);
+ck('确实发过请求(不是被跳过)', postReplyCalls.length === 1);
+
+postRepliesEmpty = false;
 
 // ---------- 汇总 ----------
 let bad = 0;

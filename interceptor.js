@@ -451,9 +451,10 @@
     const map = {};
     const stats = {
       targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0,
-      aborted: false, abortReason: null,
+      empty: 0, aborted: false, abortReason: null,
     };
     let failStreak = 0;
+    let emptyStreak = 0;
 
     for (let i = 0; i < targets.length; i += 1) {
       const post = targets[i];
@@ -502,10 +503,24 @@
           await sleep(650);
         }
 
-        got.sort((a, b) => (a.posted_at_unix || 0) - (b.posted_at_unix || 0));
-        map[post.id] = got;
-        stats.fetched += 1;
-        stats.replies += got.length;
+        if (got.length) {
+          got.sort((a, b) => (a.posted_at_unix || 0) - (b.posted_at_unix || 0));
+          map[post.id] = got;
+          stats.fetched += 1;
+          stats.replies += got.length;
+          emptyStreak = 0;
+        } else {
+          // 抓到 0 条：可能真的没有回复，也可能是被限流了，两者分不出来。
+          // 所以干脆不写进 map —— 既不会覆盖上次辛苦抓到的，
+          // 也不会更新回复数快照，下次还会再来一遍。
+          stats.empty += 1;
+          emptyStreak += 1;
+          if (emptyStreak >= 3) {
+            emit('status', { text: '连着几条都没拿到回复，像是被限流了，缓一下再继续…' });
+            await sleep(6000);
+            emptyStreak = 0;
+          }
+        }
         failStreak = 0;
       } catch (e) {
         stats.failed += 1;
@@ -521,7 +536,8 @@
       emit('progress', {
         label: '帖子回复', page: i + 1, total: targets.length, count: stats.replies,
       });
-      await sleep(650);
+      // 这一项要连着发几百个请求，间隔给得比时间线宽一点，免得触发限流
+      await sleep(900);
     }
     return { map, stats };
   }

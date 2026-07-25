@@ -12,7 +12,7 @@
    * 版本对不上时忽略回复数快照，强制把回复区整个重抓一遍，
    * 否则旧存档里那些不完整的记录会因为"回复数没变"被永远跳过。
    */
-  const INCOMING_SCHEMA = 2;
+  const INCOMING_SCHEMA = 3;
 
   let panel = null;
   let hideTimer = null;
@@ -298,6 +298,10 @@
       if (s.incoming) text += `\n收到的回复 ${s.incoming} 条`;
       if (s.incomingStats && s.incomingStats.failed) {
         text += `（${s.incomingStats.failed} 条帖子抓取失败）`;
+      }
+      if (s.incomingStats && s.incomingStats.empty) {
+        text += `\n${s.incomingStats.empty} 条没拿到回复，多半是被限流`
+          + `\n过一会儿再跑一次就能补上`;
       }
       text += `\n本次新增 ${s.fresh || 0} 条`;
       if (msg.payload.mediaOk) text += `\n媒体 ${msg.payload.mediaOk} 个`;
