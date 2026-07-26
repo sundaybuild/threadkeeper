@@ -22,10 +22,10 @@
   const KIND_RE = {
     posts: /ProfileThreadsTab/i,   // BarcelonaProfileThreadsTabQuery
     replies: /ProfileRepliesTab/i, // BarcelonaProfileRepliesTabQuery
-    // 单帖的回复区。不能只匹配 PostPage —— 打开一条串文时页面还会发
-    // BarcelonaPostPageContainerViewerDirectQuery 这类只取当前用户设置的查询，
-    // 它同样带着 first/after，看起来像分页，却跟回复毫无关系。名字里必须有 Repl。
-    postReplies: /PostPage.*Repl|DirectRepl/i,
+    // 单帖的回复区。名字放宽着匹配，真正把关的是下面 looksLikePostQuery——
+    // 靠命名约定认查询太脆，Meta 叫什么名字不归我们管；
+    // 「variables 里指不指向某条帖子」才是硬证据。
+    postReplies: /PostPage|DirectRepl|ThreadRepl/i,
   };
 
   const POST_ID_KEYS = ['postID', 'post_id', 'postId', 'mediaID', 'media_id'];
@@ -48,6 +48,9 @@
 
   /** @type {{posts: object|null, replies: object|null, postReplies: object|null}} */
   const templates = { posts: null, replies: null, postReplies: null };
+
+  /** 已经报过名的查询，同名不重复刷屏 */
+  const seenQueries = new Set();
 
   /** 会话相关的表单字段：这些永远取当前页面最新的，不留存 */
   const SESSION_FIELDS = ['fb_dtsg', 'jazoest', 'lsd', 'dpr', 'av', 'device_id'];
@@ -87,9 +90,22 @@
       const vars = JSON.parse(varsRaw);
       if (!vars) return;
 
+      // 把偷听到的查询报一次名（同名只报一次）。这个扩展全靠偷听页面的查询，
+      // 出问题时能直接看见页面到底发了些什么，比来回猜快得多。
+      if (!seenQueries.has(name)) {
+        seenQueries.add(name);
+        console.log(`${TAG} 见到查询 ${name}  variables=[${Object.keys(vars).join(', ')}]`);
+      }
+
       if (kind === 'postReplies') {
         // 名字像还不够，variables 里必须真的指向某条帖子
         if (!looksLikePostQuery(vars)) return;
+
+        // 帖子页面可能有好几个查询都带着帖子 ID，名字里含 Repl 的那个才是回复区，
+        // 别让顺手捕到的其它查询把它盖掉
+        const better = /Repl/i.test(name);
+        const haveBetter = templates.postReplies && /Repl/i.test(templates.postReplies.name);
+        if (haveBetter && !better) return;
 
         // 单帖回复区：保留这个请求自己的表单字段（它可能有主页请求没有的参数），
         // 但把会话相关的那些剔掉——重放时一律用主页模板里最新的那份，
