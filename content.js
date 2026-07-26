@@ -337,13 +337,18 @@
       const s = (pending && pending.summary) || {};
       let text = `共 ${s.posts || 0} 条串文`;
       if (s.replies) text += ` · ${s.replies} 条我的回复`;
-      if (s.incoming) text += `\n收到的回复 ${s.incoming} 条`;
-      if (s.incomingStats && s.incomingStats.failed) {
-        text += `（${s.incomingStats.failed} 条帖子抓取失败）`;
-      }
-      if (s.incomingStats && s.incomingStats.empty) {
-        text += `\n${s.incomingStats.empty} 条没拿到回复（被限流，或回复已删）`
-          + `\n下次会再试一遍，仍是空的就不再试了`;
+      // 抓过回复区就把结果说清楚，哪怕是 0 —— 少显示一行会让人以为功能没跑
+      if (s.incomingStats) {
+        const st = s.incomingStats;
+        text += `\n收到的回复 ${s.incoming || 0} 条`;
+        if (st.failed) text += `（${st.failed} 条抓取失败）`;
+        if (st.throttled) {
+          text += `\n连着 ${st.empty} 条都是空的，正被限流，已提前停下`
+            + '\n已抓到的都在，过十几分钟再跑会接着补';
+        } else if (st.empty) {
+          text += `\n${st.empty} 条没拿到（被限流，或回复已删）`
+            + '\n下次会再试一遍，仍是空的就不再试了';
+        }
       }
       text += `\n本次新增 ${s.fresh || 0} 条`;
       if (msg.payload.mediaOk) text += `\n媒体 ${msg.payload.mediaOk} 个`;
