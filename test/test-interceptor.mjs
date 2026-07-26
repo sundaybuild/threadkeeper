@@ -138,6 +138,9 @@ globalThis.fetch = async (url, init) => {
   if (vars.after === 'X' || vars.postID === SEED_PK) return { ok: true, json: async () => ({}) };
   if (failNext) { failNext = false; throw new Error('模拟网络抖动'); }
   if (kind === 'postReplies') {
+    // 没带帖子标识的（那个只取用户设置的"李鬼"查询），服务端给的就是 viewer 那套，
+    // 不算一次真正的回复区请求
+    if (!vars.postID) return { ok: true, json: async () => ({ data: { viewer: { user: {} } } }) };
     postReplyCalls.push(vars);
     if (postRepliesFail) throw new Error('查询已过期');
     // 被限流时的典型表现：HTTP 200、没有 errors，但回复列表是空的
@@ -157,7 +160,7 @@ eval(fs.readFileSync(SRC, 'utf8'));
 const { forgetPostReplies } = globalThis.__tkPage;
 
 /** 模拟页面自己发一次 GraphQL 请求，好让拦截器捕到模板 */
-function firePageRequest(kind) {
+function firePageRequest(kind, override) {
   const NAMES = {
     posts: 'BarcelonaProfileThreadsTabRefetchableQuery',
     replies: 'BarcelonaProfileRepliesTabRefetchableQuery',
@@ -165,12 +168,14 @@ function firePageRequest(kind) {
   };
   const DOCS = { posts: '111', replies: '222', postReplies: '333' };
   // 单帖查询的 variables 里没有 userID，帖子标识可能是长数字 pk 也可能是 shortcode
-  const vars = kind === 'postReplies'
+  const vars = override ? override.variables : (kind === 'postReplies'
     ? { postID: SEED_PK, shortcode: SEED_CODE, first: 10, after: null }
-    : { after: 'X', before: null, first: 10, last: null, userID: '111' };
+    : { after: 'X', before: null, first: 10, last: null, userID: '111' });
   const body = new URLSearchParams({
     fb_dtsg: 'DTSG', lsd: 'LSD', doc_id: DOCS[kind],
-    fb_api_req_friendly_name: NAMES[kind],
+    fb_api_req_friendly_name: override ? override.name : NAMES[kind],
+    // 单帖查询特有的字段，重放时必须带着
+    ...(kind === 'postReplies' ? { server_timestamps: 'true', __comet_req: '29' } : {}),
     variables: JSON.stringify(vars),
   }).toString();
   window.fetch('https://www.threads.com/graphql/query', {
@@ -197,8 +202,30 @@ function runExport(payload) {
   });
 }
 
+const events0 = [];
+window.addEventListener('message', (ev) => {
+  const d = ev.data;
+  if (d && d.__channel === CH && d.dir === 'page->cs') events0.push(d);
+});
+
 const checks = [];
 const ck = (name, ok) => checks.push([name, ok]);
+
+// === 名字像、内容却跟帖子无关的查询，不能被当成回复查询 ===
+{
+  // 打开一条串文时页面真的会发这个：只取当前用户的设置，variables 里没有任何帖子标识
+  firePageRequest('postReplies', {
+    name: 'BarcelonaPostPageContainerViewerDirectQuery',
+    variables: {
+      __relay_internal__pv__BarcelonaIsLoggedInrelayprovider: true,
+      first: 25,
+      after: null,
+    },
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  ck('不把 PostPageContainerViewer 误当成回复查询',
+    !events0.some((e) => e.type === 'captured-postreplies'));
+}
 
 // === 场景一：全量 + 回复 ===
 firePageRequest('posts');          // 页面首屏请求，捕获主贴模板

@@ -22,9 +22,29 @@
   const KIND_RE = {
     posts: /ProfileThreadsTab/i,   // BarcelonaProfileThreadsTabQuery
     replies: /ProfileRepliesTab/i, // BarcelonaProfileRepliesTabQuery
-    // 单帖的回复区：BarcelonaPostPageQuery / …DirectRepliesQuery
-    postReplies: /PostPage|DirectReplies/i,
+    // 单帖的回复区。不能只匹配 PostPage —— 打开一条串文时页面还会发
+    // BarcelonaPostPageContainerViewerDirectQuery 这类只取当前用户设置的查询，
+    // 它同样带着 first/after，看起来像分页，却跟回复毫无关系。名字里必须有 Repl。
+    postReplies: /PostPage.*Repl|DirectRepl/i,
   };
+
+  const POST_ID_KEYS = ['postID', 'post_id', 'postId', 'mediaID', 'media_id'];
+  const POST_CODE_KEYS = ['code', 'shortcode', 'postCode'];
+
+  /**
+   * variables 里得有个指向具体帖子的东西，这查询才可能是回复区。
+   * 光看查询名不够：名字对得上、内容却跟帖子无关的查询是存在的。
+   */
+  function looksLikePostQuery(vars) {
+    if (!vars || typeof vars !== 'object') return false;
+    return Object.keys(vars).some((k) => {
+      const v = vars[k];
+      if (typeof v !== 'string' || !v) return false;
+      if (POST_ID_KEYS.includes(k) || POST_CODE_KEYS.includes(k)) return true;
+      // 长数字串是 pk，字母数字混排的短串是 shortcode
+      return /^\d{15,}$/.test(v) || (/^[A-Za-z0-9_-]{8,20}$/.test(v) && !/^\d+$/.test(v));
+    });
+  }
 
   /** @type {{posts: object|null, replies: object|null, postReplies: object|null}} */
   const templates = { posts: null, replies: null, postReplies: null };
@@ -68,6 +88,9 @@
       if (!vars) return;
 
       if (kind === 'postReplies') {
+        // 名字像还不够，variables 里必须真的指向某条帖子
+        if (!looksLikePostQuery(vars)) return;
+
         // 单帖回复区：保留这个请求自己的表单字段（它可能有主页请求没有的参数），
         // 但把会话相关的那些剔掉——重放时一律用主页模板里最新的那份，
         // 免得存下来的 token 放久了失效，也免得把凭证写进存储。
@@ -725,8 +748,14 @@
         // 优先用这次偷听到的，其次是上次学会存下来的
         let source = 'live';
         if (!templates.postReplies && options.postRepliesTemplate) {
-          templates.postReplies = options.postRepliesTemplate;
-          source = 'saved';
+          const saved = options.postRepliesTemplate;
+          // 早先版本可能存下过一份根本不指向帖子的查询，别再拿它空跑
+          if (saved && looksLikePostQuery(saved.variables)) {
+            templates.postReplies = saved;
+            source = 'saved';
+          } else {
+            emit('stale-postreplies', {});
+          }
         }
         if (!templates.postReplies) {
           emit('warn', {
