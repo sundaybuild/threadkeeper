@@ -52,6 +52,18 @@
   /** 已经报过名的查询，同名不重复刷屏 */
   const seenQueries = new Set();
 
+  /**
+   * 只列出有信息量的 variables 键。
+   * Threads 的查询挂着几十个 __relay_internal__pv__* 功能开关，
+   * 原样打出来会把控制台刷得没法看，而真正要认的就是 postID 这种。
+   */
+  function briefVars(vars) {
+    const keys = Object.keys(vars || {});
+    const useful = keys.filter((k) => !k.startsWith('__relay_internal'));
+    const hidden = keys.length - useful.length;
+    return useful.join(', ') + (hidden ? ` …+${hidden}个功能开关` : '');
+  }
+
   /** 会话相关的表单字段：这些永远取当前页面最新的，不留存 */
   const SESSION_FIELDS = ['fb_dtsg', 'jazoest', 'lsd', 'dpr', 'av', 'device_id'];
 
@@ -94,7 +106,7 @@
       // 出问题时能直接看见页面到底发了些什么，比来回猜快得多。
       if (!seenQueries.has(name)) {
         seenQueries.add(name);
-        console.log(`${TAG} 见到查询 ${name}  variables=[${Object.keys(vars).join(', ')}]`);
+        console.log(`${TAG} 见到查询 ${name}  variables=[${briefVars(vars)}]`);
       }
 
       if (kind === 'postReplies') {
@@ -527,7 +539,7 @@
         查询: tpl.name,
         doc_id: tpl.doc_id,
         表单字段: Array.from(params.keys()).sort(),
-        variables: vars,
+        variables: briefVars(vars),
         响应顶层键: json && json.data ? Object.keys(json.data) : Object.keys(json || {}),
         找到连接: !!c,
         edges数: c ? c.edges.length : 0,
