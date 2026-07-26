@@ -429,6 +429,15 @@
   const FAIL_STREAK_LIMIT = 3;
 
   /**
+   * 连续这么多条都拿到空回复就收手。
+   *
+   * 退让是给偶发限流用的；真被持续限流时，等多久都还是空，
+   * 而退让又让每条越等越久，跑完几百条要十几分钟且颗粒无收。
+   * 所以宁可早停让用户过会儿再来，也别在这儿耗着。
+   */
+  const EMPTY_STREAK_LIMIT = 5;
+
+  /**
    * 把模板 variables 里的帖子标识换成目标帖子的。
    * 字段名各版本不一样，所以既按常见名替换，也按值的长相（纯数字长串=pk，
    * 混合短串=shortcode）兜底。
@@ -492,8 +501,10 @@
       targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0,
       empty: 0, aborted: false, abortReason: null, pace: 1,
     };
-    // 这一项要连着发几百个请求，是最容易被限流的地方
-    const pacer = makePacer(900);
+    // 这一项要连着发几百个请求，是最容易被限流的地方。
+    // 退让上限压到 4 倍：再高也救不回持续限流，只会拖长白等的时间，
+    // 那种情况交给上面的连续空熔断处理。
+    const pacer = makePacer(900, { max: 4 });
     let failStreak = 0;
     let emptyStreak = 0;
 
@@ -567,6 +578,13 @@
                 ? '连着几条没拿到回复，像是被限流了，正在自动放慢…'
                 : '这几条串文的回复区返回是空的（回复可能已被删除），继续…',
             });
+          }
+          // 一直空下去就别耗着了：退让会越等越久，再跑几百条也是白跑
+          if (emptyStreak >= EMPTY_STREAK_LIMIT) {
+            stats.aborted = true;
+            stats.throttled = true;
+            stats.abortReason = `连续 ${emptyStreak} 条都没拿到回复`;
+            break;
           }
         }
         failStreak = 0;
@@ -722,7 +740,12 @@
           incoming = await harvestIncoming(targets, options.knownReplyCounts || null);
           incoming.stats.source = source;
 
-          if (incoming.stats.aborted) {
+          if (incoming.stats.throttled) {
+            emit('warn', {
+              message: `${incoming.stats.abortReason}，八成是被限流了，这一项先停下。`
+                + '已经抓到的都保住了，过十几分钟再跑一次就会接着补。',
+            });
+          } else if (incoming.stats.aborted) {
             // 上次存下来的那份已经不管用了，清掉，让下次重新学
             if (source === 'saved') emit('stale-postreplies', {});
             emit('warn', {

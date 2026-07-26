@@ -234,13 +234,20 @@
         // 抓到空的：限流的话下次会拿到，但如果是回复被删了就永远是空。
         // 所以连着两轮都空就别再试了——把它当作"回复数没变"记进快照，
         // 等哪天 reply_count 真的变了，快照对不上，自然会重新去抓。
-        (res.emptyIds || []).forEach((pid) => {
-          emptyCounts[pid] = (emptyCounts[pid] || 0) + 1;
-          if (emptyCounts[pid] >= 2) {
-            const target = byId.get(pid);
-            if (target) replyCounts[pid] = target.reply_count;
-          }
-        });
+        //
+        // 但整轮一条都没抓到的时候不算数：那是被限流，跟回复删没删无关，
+        // 照记的话会把一堆好帖子误判成"没有回复"永久跳过。
+        const st = res.incomingStats || {};
+        const throttledRun = st.throttled || (st.fetched === 0 && st.empty > 0);
+        if (!throttledRun) {
+          (res.emptyIds || []).forEach((pid) => {
+            emptyCounts[pid] = (emptyCounts[pid] || 0) + 1;
+            if (emptyCounts[pid] >= 2) {
+              const target = byId.get(pid);
+              if (target) replyCounts[pid] = target.reply_count;
+            }
+          });
+        }
       }
 
       const all = posts.concat(replies);
@@ -279,6 +286,7 @@
       todo.forEach((m) => { mediaDone[m.url] = m.name; });
       await store.set(key, {
         posts, replies, media_done: mediaDone, reply_counts: replyCounts,
+        empty_counts: emptyCounts,
         // 只有这轮真抓过回复区，才算按新版本存过
         incoming_schema: res.incoming ? INCOMING_SCHEMA : (prev.incoming_schema || 0),
         updated_at: new Date().toISOString(),

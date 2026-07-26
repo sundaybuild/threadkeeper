@@ -351,12 +351,35 @@ const r5 = await runExport({
 });
 
 ck('空列表计入 empty', r5.incomingStats.empty === 1);
+ck('空列表会上报是哪几条', Array.isArray(r5.emptyIds) && r5.emptyIds.length === 1);
 ck('空列表不算抓取成功', r5.incomingStats.fetched === 0);
 ck('空列表不算失败，也不熔断',
   r5.incomingStats.failed === 0 && r5.incomingStats.aborted === false);
 ck('空结果不写进结果集(不会覆盖上次抓到的回复)',
   Object.keys(r5.incoming).length === 0);
 ck('确实发过请求(不是被跳过)', postReplyCalls.length === 1);
+
+// === 场景六：一直是空的就该早停，不能退让着耗十几分钟 ===
+postIdx = 0; replyIdx = 0;
+postReplyCalls.length = 0;
+
+const manyTargets = Array.from({ length: 40 }, (_, i) => ({
+  id: `7${i}`, code: `T${i}`, reply_count: 1,
+}));
+const t0 = Date.now();
+const r6 = await runExport({ includeIncoming: true, knownIds: [], allPosts: manyTargets });
+const elapsed = Date.now() - t0;
+
+ck('目标很多', r6.incomingStats.targets >= 40);
+ck('连续空到上限就收手', r6.incomingStats.aborted === true);
+ck('标记为疑似限流(而不是查询失效)', r6.incomingStats.throttled === true);
+ck('只白跑了 5 条就停', r6.incomingStats.empty === 5);
+ck('没把剩下几十条跑完', postReplyCalls.length === 5);
+ck('早停省下了大量时间', elapsed < 30000);
+ck('限流中止不清掉已学会的查询',
+  !r6.events.some((e) => e.type === 'stale-postreplies'));
+ck('给了"过会儿再来"的提示',
+  r6.events.some((e) => e.type === 'warn' && /过十几分钟/.test(e.payload.message)));
 
 postRepliesEmpty = false;
 
