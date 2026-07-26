@@ -14,7 +14,10 @@ const OPTS = {
 };
 
 const $incomingHint = document.getElementById('incoming-hint');
+const $reset = document.getElementById('reset');
 let learnedReplyQuery = false;
+let currentHandle = null;
+let storedCount = 0;
 
 /**
  * 勾上「别人给我的回复」时给出状态。
@@ -45,11 +48,45 @@ async function showLastRun(handle) {
   if (!data || !data.updated_at) {
     $last.textContent = '还没存过档，这次会全量抓一遍';
     OPTS.incremental.checked = false;
+    OPTS.incremental.disabled = true;
+    storedCount = 0;
+    $reset.hidden = true;
     return;
   }
-  const n = (data.posts || []).length + (data.replies || []).length;
-  $last.textContent = `已存 ${n} 条 · 上次 ${fmt(data.updated_at)}`;
+  storedCount = (data.posts || []).length + (data.replies || []).length;
+  $last.textContent = `已存 ${storedCount} 条 · 上次 ${fmt(data.updated_at)}`;
+  OPTS.incremental.disabled = false;
+  $reset.hidden = false;
 }
+
+/** 清空存档：破坏性操作，点两下才生效 */
+let resetArmed = false;
+let resetTimer = null;
+
+function disarmReset() {
+  resetArmed = false;
+  clearTimeout(resetTimer);
+  $reset.classList.remove('armed');
+  $reset.textContent = '清空这个账号的存档，下次从头抓';
+}
+
+$reset.addEventListener('click', async () => {
+  if (!currentHandle) return;
+
+  if (!resetArmed) {
+    resetArmed = true;
+    $reset.classList.add('armed');
+    $reset.textContent = `确定清空这 ${storedCount} 条记录？再点一下`;
+    resetTimer = setTimeout(disarmReset, 6000);
+    return;
+  }
+
+  clearTimeout(resetTimer);
+  await new Promise((r) => chrome.storage.local.remove(`archive:${currentHandle}`, r));
+  disarmReset();
+  await showLastRun(currentHandle);
+  $last.textContent = '存档已清空，这次会从头抓一遍';
+});
 
 async function detect() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -63,6 +100,7 @@ async function detect() {
   if (!m) return fail('请先打开一个 Threads 个人主页<br>（网址形如 threads.com/@用户名）');
 
   const handle = decodeURIComponent(m[1]);
+  currentHandle = handle;
   $account.innerHTML = `将存档：<b>@${handle}</b>`;
   $go.disabled = false;
   $go.dataset.tabId = String(tab.id);
