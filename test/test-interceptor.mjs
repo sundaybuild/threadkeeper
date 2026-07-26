@@ -152,7 +152,9 @@ globalThis.fetch = async (url, init) => {
 win.fetch = globalThis.fetch;
 
 // ---------- 加载被测脚本 ----------
+globalThis.__TK_TEST__ = true;
 eval(fs.readFileSync(SRC, 'utf8'));
+const { makePacer } = globalThis.__tkPage;
 
 /** 模拟页面自己发一次 GraphQL 请求，好让拦截器捕到模板 */
 function firePageRequest(kind) {
@@ -197,6 +199,39 @@ function runExport(payload) {
 
 const checks = [];
 const ck = (name, ok) => checks.push([name, ok]);
+
+// === 节奏控制器：随机抖动 + 自适应退让 ===
+{
+  const p = makePacer(1000);
+  const samples = Array.from({ length: 400 }, () => p.nextDelay());
+  const lo = Math.min(...samples);
+  const hi = Math.max(...samples);
+  ck('抖动落在 0.7~1.4 倍区间', lo >= 700 && hi <= 1400);
+  ck('抖动确实是随机的(不是固定值)', new Set(samples).size > 100);
+  ck('起步不比原来慢', samples.reduce((a, b) => a + b, 0) / samples.length < 1100);
+
+  p.penalize();
+  ck('碰壁后退让', Math.abs(p.factor - 1.8) < 1e-9);
+  p.penalize();
+  ck('连续碰壁指数退让', Math.abs(p.factor - 3.24) < 1e-9);
+  for (let i = 0; i < 10; i += 1) p.penalize();
+  ck('退让有上限，不会无限拖长', p.factor === 6);
+  ck('最长等待可控', p.nextDelay() <= 6 * 1000 * 1.4);
+
+  // 顺利几条才收回来一点，避免刚被限流就立刻提速
+  p.reward(); p.reward();
+  ck('顺利一两条还不急着提速', p.factor === 6);
+  p.reward();
+  ck('连着顺利够 3 条才收回一点', Math.abs(p.factor - 4.8) < 1e-9);
+  for (let i = 0; i < 60; i += 1) p.reward();
+  ck('一路顺利最终回到基础节奏', p.factor === 1);
+
+  const q = makePacer(1000);
+  q.penalize(); q.reward(); q.reward();
+  q.penalize();  // 中途又碰壁，之前攒的顺利次数要清零
+  q.reward(); q.reward();
+  ck('中途碰壁会重置提速进度', q.factor > 1.8);
+}
 
 // === 场景一：全量 + 回复 ===
 firePageRequest('posts');          // 页面首屏请求，捕获主贴模板

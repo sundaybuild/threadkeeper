@@ -247,6 +247,41 @@
 
   function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+  /**
+   * 请求节奏控制：随机抖动 + 自适应退让。
+   *
+   * 固定节奏本身就是机器人特征，所以每次等待都乘一个随机系数；
+   * 一旦碰壁（空结果或报错）就成倍拉长间隔，之后连着顺利几条再慢慢收回来。
+   * 这比一刀切调慢划算——没被限流的时候不用白等。
+   */
+  function makePacer(baseMs, opts) {
+    const o = Object.assign({ min: 1, max: 6, up: 1.8, down: 0.8, calm: 3 }, opts);
+    let factor = 1;
+    let streak = 0;
+    return {
+      get factor() { return factor; },
+      /** 这一次该等多久（含抖动） */
+      nextDelay() {
+        const jitter = 0.7 + Math.random() * 0.7; // 0.7 ~ 1.4 倍
+        return Math.round(baseMs * factor * jitter);
+      },
+      wait() { return sleep(this.nextDelay()); },
+      /** 碰壁了，往后退 */
+      penalize() {
+        factor = Math.min(factor * o.up, o.max);
+        streak = 0;
+      },
+      /** 顺利一条；连着顺利够多次才把间隔收回来一点 */
+      reward() {
+        streak += 1;
+        if (streak >= o.calm) {
+          factor = Math.max(factor * o.down, o.min);
+          streak = 0;
+        }
+      },
+    };
+  }
+
   function currentHandle() {
     const m = location.pathname.match(/^\/@([^/]+)/);
     return m ? decodeURIComponent(m[1]) : null;
@@ -335,6 +370,7 @@
    * @param {(edges:Array, out:Array)=>number} harvestPage 处理一页，返回本页新增条数
    */
   async function paginate(kind, harvestPage, out, label) {
+    const pacer = makePacer(650);
     let cursor = null;
     let page = 0;
 
@@ -350,6 +386,7 @@
           break;
         } catch (e) {
           lastErr = e;
+          pacer.penalize();
           emit('status', { text: `${label}第 ${page} 页失败(${e.message})，重试中…` });
           await sleep(attempt * 1500);
         }
@@ -368,7 +405,8 @@
       const { hasNext, cursor: next } = readPageInfo(conn.pageInfo);
       if (!hasNext || !next || next === cursor) break;
       cursor = next;
-      await sleep(650);
+      pacer.reward();
+      await pacer.wait();
     }
     return out;
   }
@@ -451,8 +489,10 @@
     const map = {};
     const stats = {
       targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0,
-      empty: 0, aborted: false, abortReason: null,
+      empty: 0, aborted: false, abortReason: null, pace: 1,
     };
+    // 这一项要连着发几百个请求，是最容易被限流的地方
+    const pacer = makePacer(900);
     let failStreak = 0;
     let emptyStreak = 0;
 
@@ -500,7 +540,7 @@
           const { hasNext, cursor: next } = readPageInfo(conn.pageInfo);
           if (!hasNext || !next || next === cursor || added === 0) break;
           cursor = next;
-          await sleep(650);
+          await pacer.wait();
         }
 
         if (got.length) {
@@ -509,22 +549,23 @@
           stats.fetched += 1;
           stats.replies += got.length;
           emptyStreak = 0;
+          pacer.reward();
         } else {
           // 抓到 0 条：可能真的没有回复，也可能是被限流了，两者分不出来。
           // 所以干脆不写进 map —— 既不会覆盖上次辛苦抓到的，
           // 也不会更新回复数快照，下次还会再来一遍。
           stats.empty += 1;
           emptyStreak += 1;
-          if (emptyStreak >= 3) {
-            emit('status', { text: '连着几条都没拿到回复，像是被限流了，缓一下再继续…' });
-            await sleep(6000);
-            emptyStreak = 0;
+          pacer.penalize();
+          if (emptyStreak === 3) {
+            emit('status', { text: '连着几条都没拿到回复，像是被限流了，正在自动放慢…' });
           }
         }
         failStreak = 0;
       } catch (e) {
         stats.failed += 1;
         failStreak += 1;
+        pacer.penalize();
         // 一连几条都失败，多半是查询本身过期了，别再白跑几百次
         if (failStreak >= FAIL_STREAK_LIMIT) {
           stats.aborted = true;
@@ -535,10 +576,11 @@
 
       emit('progress', {
         label: '帖子回复', page: i + 1, total: targets.length, count: stats.replies,
+        pace: pacer.factor,
       });
-      // 这一项要连着发几百个请求，间隔给得比时间线宽一点，免得触发限流
-      await sleep(900);
+      await pacer.wait();
     }
+    stats.pace = pacer.factor;
     return { map, stats };
   }
 
@@ -706,6 +748,11 @@
     if (!d || d.__channel !== CHANNEL || d.dir !== 'cs->page') return;
     if (d.type === 'start') run(d.payload || {});
   });
+
+  // 给回归测试留的口子：正常运行时 __TK_TEST__ 未定义，这段不会执行
+  if (typeof globalThis !== 'undefined' && globalThis.__TK_TEST__) {
+    globalThis.__tkPage = { makePacer, substituteIds, normalizePost };
+  }
 
   console.log(TAG, '已就绪');
 })();
