@@ -698,7 +698,16 @@
           incoming = await harvestIncoming(targets, options.knownReplyCounts || null);
           incoming.stats.source = source;
 
-          if (incoming.stats.throttled) {
+          if (incoming.stats.throttled && source === 'saved') {
+            // 全空 + 用的是上次存下来的查询 —— 比起限流，更像是这份查询过期了。
+            // 过期不一定报错，Meta 换了 doc_id 后也可能照样返回 200 加一个空列表，
+            // 跟被限流长得一模一样。清掉让用户重学一次，比干等着强。
+            emit('stale-postreplies', {});
+            emit('warn', {
+              message: '回复区一条都没抓到。记住的那份查询多半已经失效（Meta 改版了），'
+                + '已经清掉。请点开自己任意一条串文让它重新学一次，再回来存档。',
+            });
+          } else if (incoming.stats.throttled) {
             emit('warn', {
               message: `${incoming.stats.abortReason}，八成是被限流了，这一项先停下。`
                 + '已经抓到的都保住了，过十几分钟再跑一次就会接着补。',
@@ -741,7 +750,11 @@
 
   // 给回归测试留的口子：正常运行时 __TK_TEST__ 未定义，这段不会执行
   if (typeof globalThis !== 'undefined' && globalThis.__TK_TEST__) {
-    globalThis.__tkPage = { substituteIds, normalizePost };
+    globalThis.__tkPage = {
+      substituteIds,
+      normalizePost,
+      forgetPostReplies() { templates.postReplies = null; },
+    };
   }
 
   console.log(TAG, '已就绪');

@@ -82,7 +82,13 @@ $reset.addEventListener('click', async () => {
   }
 
   clearTimeout(resetTimer);
-  await new Promise((r) => chrome.storage.local.remove(`archive:${currentHandle}`, r));
+  // 连记住的查询格式一起清掉：既然是推倒重来，就别把一份可能已经失效的
+  // 查询留着继续用。代价只是重新点开一条串文让它学一次。
+  await new Promise((r) => chrome.storage.local.remove(
+    [`archive:${currentHandle}`, 'tpl:postReplies'], r,
+  ));
+  learnedReplyQuery = false;
+  refreshIncomingHint();
   disarmReset();
   await showLastRun(currentHandle);
   $last.textContent = '存档已清空，这次会从头抓一遍';

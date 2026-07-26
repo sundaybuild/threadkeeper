@@ -154,6 +154,7 @@ win.fetch = globalThis.fetch;
 // ---------- 加载被测脚本 ----------
 globalThis.__TK_TEST__ = true;
 eval(fs.readFileSync(SRC, 'utf8'));
+const { forgetPostReplies } = globalThis.__tkPage;
 
 /** 模拟页面自己发一次 GraphQL 请求，好让拦截器捕到模板 */
 function firePageRequest(kind) {
@@ -342,10 +343,34 @@ ck('标记为疑似限流(而不是查询失效)', r6.incomingStats.throttled ==
 ck('只白跑了 10 条就停', r6.incomingStats.empty === 10);
 ck('没把剩下几十条跑完', postReplyCalls.length === 10);
 ck('早停省下了大量时间', elapsed < 30000);
-ck('限流中止不清掉已学会的查询',
+ck('本次偷听到的查询全空，不误判为查询失效',
   !r6.events.some((e) => e.type === 'stale-postreplies'));
 ck('给了"过会儿再来"的提示',
   r6.events.some((e) => e.type === 'warn' && /过十几分钟/.test(e.payload.message)));
+
+// === 场景七：用「上次存下来的查询」却全空 —— 那多半是查询过期，不是限流 ===
+postIdx = 0; replyIdx = 0;
+postReplyCalls.length = 0;
+forgetPostReplies();          // 忘掉这次偷听到的，逼它去用存下来的那份
+
+const r7 = await runExport({
+  includeIncoming: true,
+  knownIds: [],
+  postRepliesTemplate: {
+    doc_id: '333',
+    name: 'BarcelonaPostPageRefetchableDirectRepliesQuery',
+    variables: { postID: '8888888888888888888', first: 10, after: null },
+  },
+  allPosts: Array.from({ length: 20 }, (_, i) => ({ id: `9${i}`, code: `S${i}`, reply_count: 2 })),
+});
+
+ck('存下来的查询确实被用上了', r7.incomingStats.source === 'saved');
+ck('全空时判定为查询过期', r7.events.some((e) => e.type === 'stale-postreplies'));
+ck('提示用户重新学一次',
+  r7.events.some((e) => e.type === 'warn' && /重新学/.test(e.payload.message)));
+ck('不再误报成限流',
+  !r7.events.some((e) => e.type === 'warn' && /过十几分钟/.test(e.payload.message)));
+ck('同样只白跑 10 条', postReplyCalls.length === 10);
 
 postRepliesEmpty = false;
 
