@@ -178,8 +178,7 @@
       case 'progress': {
         const p = d.payload;
         const where = p.total ? `（第 ${p.page} / ${p.total} 条）` : `（第 ${p.page} 页）`;
-        const pace = p.pace > 1.2 ? `\n被限流了，已自动放慢到 ${p.pace.toFixed(1)} 倍` : '';
-        show(title(`正在抓取${p.label}…`) + `已拿到 <b>${p.count}</b> 条${where}${pace}`);
+        show(title(`正在抓取${p.label}…`) + `已拿到 <b>${p.count}</b> 条${where}`);
         break;
       }
       case 'captured-postreplies':
