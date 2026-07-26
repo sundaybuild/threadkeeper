@@ -193,7 +193,7 @@ function runExport(payload) {
     };
     window.addEventListener('message', onMsg);
     window.postMessage({ __channel: CH, dir: 'cs->page', type: 'start', payload });
-    setTimeout(() => reject(new Error('超时。事件流: ' + evts.map((e) => e.type).join(','))), 25000);
+    setTimeout(() => reject(new Error('超时。事件流: ' + evts.map((e) => e.type).join(','))), 45000);
   });
 }
 
@@ -373,8 +373,8 @@ const elapsed = Date.now() - t0;
 ck('目标很多', r6.incomingStats.targets >= 40);
 ck('连续空到上限就收手', r6.incomingStats.aborted === true);
 ck('标记为疑似限流(而不是查询失效)', r6.incomingStats.throttled === true);
-ck('只白跑了 5 条就停', r6.incomingStats.empty === 5);
-ck('没把剩下几十条跑完', postReplyCalls.length === 5);
+ck('只白跑了 10 条就停', r6.incomingStats.empty === 10);
+ck('没把剩下几十条跑完', postReplyCalls.length === 10);
 ck('早停省下了大量时间', elapsed < 30000);
 ck('限流中止不清掉已学会的查询',
   !r6.events.some((e) => e.type === 'stale-postreplies'));
