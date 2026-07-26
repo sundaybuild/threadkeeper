@@ -25,7 +25,9 @@ globalThis.__TK_TEST__ = true;
 eval(fs.readFileSync(HTML, 'utf8') + '\n;globalThis.buildArchiveHtml = buildArchiveHtml;');
 eval(fs.readFileSync(CS, 'utf8'));
 
-const { planMedia, mergeById, extOf, toDataUrl } = globalThis.__tk;
+const {
+  planMedia, mergeById, extOf, toDataUrl, knownCountsFor, INCOMING_SCHEMA,
+} = globalThis.__tk;
 
 const checks = [];
 const ck = (name, ok) => checks.push([name, ok]);
@@ -184,6 +186,35 @@ const ck = (name, ok) => checks.push([name, ok]);
 
   const fresh = mergeById(oldList, [{ id: '1', posted_at_unix: 100, incoming_replies: [{ id: 'r1' }, { id: 'r2' }] }]);
   ck('这轮抓到新回复时以新的为准', fresh[0].incoming_replies.length === 2);
+}
+
+// ---------- 该跳过哪些串文的回复区 ----------
+{
+  ck('没有历史时不跳过任何串文', Object.keys(knownCountsFor(null)).length === 0);
+
+  const cur = {
+    incoming_schema: INCOMING_SCHEMA,
+    reply_counts: { 1: 5, 2: 3 },
+    posts: [{ id: '1', reply_count: 5 }, { id: '2', reply_count: 3 }],
+  };
+  ck('版本一致时沿用回复数快照',
+    JSON.stringify(knownCountsFor(cur)) === JSON.stringify({ 1: 5, 2: 3 }));
+
+  // 抓法升级过：只该补还没拿到回复的，已经抓到的别再抓一遍
+  const old = {
+    incoming_schema: 0,
+    reply_counts: { 1: 5, 2: 3, 3: 7 },
+    posts: [
+      { id: '1', reply_count: 5, incoming_replies: [{ id: 'a' }, { id: 'b' }] }, // 有数据
+      { id: '2', reply_count: 3, incoming_replies: [] },                          // 上次被限流清空
+      { id: '3', reply_count: 7 },                                                // 从没抓过
+    ],
+  };
+  const got = knownCountsFor(old);
+  ck('升级后已抓到内容的仍跳过', got['1'] === 5);
+  ck('升级后空数组的要重抓', !('2' in got));
+  ck('升级后没抓过的要重抓', !('3' in got));
+  ck('升级后不会无差别全部重抓', Object.keys(got).length === 1);
 }
 
 // ---------- 汇总 ----------

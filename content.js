@@ -110,6 +110,25 @@
   }
 
   /**
+   * 算出「哪些串文的回复区可以跳过」。
+   *
+   * 正常情况沿用上次的回复数快照：回复数没变就不用再抓。
+   * 抓法升级过（schema 对不上）时也不是无差别全部重抓——只补那些还没拿到
+   * 回复的。已经抓到内容的再抓一遍既慢又白费，还会刷出"连着几条没拿到"
+   * 的误报。
+   */
+  function knownCountsFor(prev) {
+    if (!prev) return {};
+    if (prev.incoming_schema === INCOMING_SCHEMA) return prev.reply_counts || {};
+
+    const counts = {};
+    (prev.posts || []).forEach((p) => {
+      if (p.incoming_replies && p.incoming_replies.length) counts[p.id] = p.reply_count;
+    });
+    return counts;
+  }
+
+  /**
    * 给每条媒体分配本地文件名，写进 local 字段；
    * 返回这次需要下载的清单（已经下过的跳过）。
    */
@@ -199,14 +218,28 @@
       const replyCounts = prev.reply_counts || {};
 
       // 把这轮抓到的「别人的回复」贴回对应的帖子上
+      const emptyCounts = prev.empty_counts || {};
       if (res.incoming) {
         const byId = new Map(posts.map((p) => [p.id, p]));
+
         Object.keys(res.incoming).forEach((pid) => {
           const target = byId.get(pid);
           if (!target) return;
           target.incoming_replies = res.incoming[pid];
           target.incoming_replies_at = new Date().toISOString();
           replyCounts[pid] = target.reply_count; // 快照，下次靠它判断要不要重抓
+          delete emptyCounts[pid];               // 这次拿到了，之前的空记录作废
+        });
+
+        // 抓到空的：限流的话下次会拿到，但如果是回复被删了就永远是空。
+        // 所以连着两轮都空就别再试了——把它当作"回复数没变"记进快照，
+        // 等哪天 reply_count 真的变了，快照对不上，自然会重新去抓。
+        (res.emptyIds || []).forEach((pid) => {
+          emptyCounts[pid] = (emptyCounts[pid] || 0) + 1;
+          if (emptyCounts[pid] >= 2) {
+            const target = byId.get(pid);
+            if (target) replyCounts[pid] = target.reply_count;
+          }
         });
       }
 
@@ -301,8 +334,8 @@
         text += `（${s.incomingStats.failed} 条帖子抓取失败）`;
       }
       if (s.incomingStats && s.incomingStats.empty) {
-        text += `\n${s.incomingStats.empty} 条没拿到回复，多半是被限流`
-          + `\n过一会儿再跑一次就能补上`;
+        text += `\n${s.incomingStats.empty} 条没拿到回复（被限流，或回复已删）`
+          + `\n下次会再试一遍，仍是空的就不再试了`;
       }
       text += `\n本次新增 ${s.fresh || 0} 条`;
       if (msg.payload.mediaOk) text += `\n媒体 ${msg.payload.mediaOk} 个`;
@@ -320,7 +353,9 @@
 
   // 给回归测试留的口子：正常运行时 __TK_TEST__ 未定义，这段不会执行
   if (typeof globalThis !== 'undefined' && globalThis.__TK_TEST__) {
-    globalThis.__tk = { planMedia, mergeById, toDataUrl, extOf };
+    globalThis.__tk = {
+      planMedia, mergeById, toDataUrl, extOf, knownCountsFor, INCOMING_SCHEMA,
+    };
   }
 
   async function begin(opts) {
@@ -348,9 +383,7 @@
       // 老帖也可能收到新回复，所以把历史帖子一起交上去
       extra.allPosts = (prev && prev.posts ? prev.posts : [])
         .map((p) => ({ id: p.id, code: p.code, reply_count: p.reply_count }));
-      // 抓法升级过就别信旧快照，让它整个重抓一遍
-      const schemaOk = prev && prev.incoming_schema === INCOMING_SCHEMA;
-      extra.knownReplyCounts = (schemaOk && prev.reply_counts) || {};
+      extra.knownReplyCounts = knownCountsFor(prev);
       extra.postRepliesTemplate = await store.get('tpl:postReplies');
     }
 

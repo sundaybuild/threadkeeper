@@ -487,6 +487,7 @@
    */
   async function harvestIncoming(targets, knownCounts) {
     const map = {};
+    const emptyIds = [];
     const stats = {
       targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0,
       empty: 0, aborted: false, abortReason: null, pace: 1,
@@ -555,10 +556,17 @@
           // 所以干脆不写进 map —— 既不会覆盖上次辛苦抓到的，
           // 也不会更新回复数快照，下次还会再来一遍。
           stats.empty += 1;
+          emptyIds.push(post.id);
           emptyStreak += 1;
           pacer.penalize();
           if (emptyStreak === 3) {
-            emit('status', { text: '连着几条都没拿到回复，像是被限流了，正在自动放慢…' });
+            // 这轮抓成功过、然后突然连着空，才像是被限流；
+            // 一上来就全是空的，更可能是这些串文的回复本来就取不到（已删除等）
+            emit('status', {
+              text: stats.fetched > 0
+                ? '连着几条没拿到回复，像是被限流了，正在自动放慢…'
+                : '这几条串文的回复区返回是空的（回复可能已被删除），继续…',
+            });
           }
         }
         failStreak = 0;
@@ -581,7 +589,7 @@
       await pacer.wait();
     }
     stats.pace = pacer.factor;
-    return { map, stats };
+    return { map, stats, emptyIds };
   }
 
   async function run(opts) {
@@ -733,6 +741,7 @@
         handle, posts, replies, stats,
         incoming: incoming ? incoming.map : null,
         incomingStats: incoming ? incoming.stats : null,
+        emptyIds: incoming ? incoming.emptyIds : null,
       });
     } catch (err) {
       console.error(TAG, err);
