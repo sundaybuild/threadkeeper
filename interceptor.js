@@ -29,6 +29,9 @@
   /** @type {{posts: object|null, replies: object|null, postReplies: object|null}} */
   const templates = { posts: null, replies: null, postReplies: null };
 
+  /** 会话相关的表单字段：这些永远取当前页面最新的，不留存 */
+  const SESSION_FIELDS = ['fb_dtsg', 'jazoest', 'lsd', 'dpr', 'av', 'device_id'];
+
   function normalizeHeaders(h) {
     const out = {};
     if (!h) return out;
@@ -65,10 +68,24 @@
       if (!vars) return;
 
       if (kind === 'postReplies') {
-        // 单帖回复区：只留 doc_id 和 variables 形状。请求头和 token 到时候
-        // 借主页模板的最新那份用，免得这里存下来的 token 放久了失效。
-        templates.postReplies = { doc_id: params.get('doc_id'), name, variables: vars, at: Date.now() };
-        emit('captured-postreplies', { doc_id: params.get('doc_id'), name, variables: vars });
+        // 单帖回复区：保留这个请求自己的表单字段（它可能有主页请求没有的参数），
+        // 但把会话相关的那些剔掉——重放时一律用主页模板里最新的那份，
+        // 免得存下来的 token 放久了失效，也免得把凭证写进存储。
+        const form = new URLSearchParams(raw);
+        Array.from(form.keys()).forEach((k) => {
+          if (k.startsWith('__') || SESSION_FIELDS.includes(k)) form.delete(k);
+        });
+        form.delete('variables');
+
+        const tpl = {
+          doc_id: params.get('doc_id'),
+          name,
+          variables: vars,
+          form: form.toString(),
+          at: Date.now(),
+        };
+        templates.postReplies = tpl;
+        emit('captured-postreplies', tpl);
         console.log(TAG, '已捕获单帖回复模板:', name);
         return;
       }
@@ -403,6 +420,9 @@
    */
   const EMPTY_STREAK_LIMIT = 10;
 
+  /** 每轮回复区抓取时，把第一次请求的细节打一次到控制台，方便排错 */
+  let dumpNextReply = false;
+
   /**
    * 把模板 variables 里的帖子标识换成目标帖子的。
    * 字段名各版本不一样，所以既按常见名替换，也按值的长相（纯数字长串=pk，
@@ -427,12 +447,20 @@
   }
 
   async function fetchPostReplies(post, cursor) {
-    const base = templates.posts; // 借主页模板的 url / 请求头 / token
-    const params = new URLSearchParams(base.body);
-    params.set('doc_id', templates.postReplies.doc_id);
-    params.set('fb_api_req_friendly_name', templates.postReplies.name);
+    const base = templates.posts; // 借主页模板的 url / 请求头 / 会话字段
+    const tpl = templates.postReplies;
 
-    const vars = substituteIds(templates.postReplies.variables, post);
+    // 以单帖请求自己的表单为底（它可能带着主页请求没有的参数），
+    // 再用主页模板里最新的会话字段盖上去
+    const params = new URLSearchParams(tpl.form || '');
+    const fresh = new URLSearchParams(base.body);
+    fresh.forEach((v, k) => {
+      if (k.startsWith('__') || SESSION_FIELDS.includes(k)) params.set(k, v);
+    });
+    params.set('doc_id', tpl.doc_id);
+    params.set('fb_api_req_friendly_name', tpl.name);
+
+    const vars = substituteIds(tpl.variables, post);
     vars.first = vars.first || 25;
     if ('cursor' in vars && !('after' in vars)) vars.cursor = cursor;
     else vars.after = cursor;
@@ -451,6 +479,22 @@
     if (json && json.errors && json.errors.length) {
       throw new Error(json.errors[0].message || 'GraphQL 返回错误');
     }
+
+    // 抓不到东西时，把第一次请求长什么样打出来，省得只能靠猜
+    if (dumpNextReply) {
+      dumpNextReply = false;
+      const c = pickMainConnection(json);
+      console.log(`${TAG} 回复区请求诊断（串文 ${post.code}）`, {
+        查询: tpl.name,
+        doc_id: tpl.doc_id,
+        表单字段: Array.from(params.keys()).sort(),
+        variables: vars,
+        响应顶层键: json && json.data ? Object.keys(json.data) : Object.keys(json || {}),
+        找到连接: !!c,
+        edges数: c ? c.edges.length : 0,
+        响应片段: JSON.stringify(json).slice(0, 800),
+      });
+    }
     return json;
   }
 
@@ -463,6 +507,7 @@
   async function harvestIncoming(targets, knownCounts) {
     const map = {};
     const emptyIds = [];
+    dumpNextReply = true;
     const stats = {
       targets: targets.length, fetched: 0, skipped: 0, failed: 0, replies: 0,
       empty: 0, aborted: false, abortReason: null,
